@@ -90,9 +90,9 @@ const d = (
 export const BLOCKS: BlockDef[] = [];
 const defs: BlockDef[] = [
   d(B.AIR, 'air', 0, 0, ['#000', '#000'], 'plain', { solid: false, blastable: false }),
-  d(B.GRASS, 'grass', 1, 1, ['#7a5230', '#4caf3a', '#3a8a2c'], 'grass'),
-  d(B.DIRT, 'dirt', 1, 1, ['#7a5230', '#5e3d22'], 'plain'),
-  d(B.CLAY, 'clay', 2, 2, ['#b5785a', '#99603f'], 'plain'),
+  d(B.GRASS, 'grass', 0.5, 1, ['#7a5230', '#4caf3a', '#3a8a2c'], 'grass'),
+  d(B.DIRT, 'dirt', 0.5, 1, ['#7a5230', '#5e3d22'], 'plain'),
+  d(B.CLAY, 'clay', 1.5, 2, ['#b5785a', '#99603f'], 'plain'),
   d(B.STONE, 'stone', 3, 2, ['#7d7d85', '#64646c'], 'plain'),
   d(B.COAL, 'coal', 4, 6, ['#7d7d85', '#1d1d22', '#3a3a40'], 'ore', { ore: true }),
   d(B.COPPER, 'copper', 5, 10, ['#7d7d85', '#e07a3c', '#3fae8e'], 'ore', { ore: true }),

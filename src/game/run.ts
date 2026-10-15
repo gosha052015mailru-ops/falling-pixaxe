@@ -36,7 +36,10 @@ export type GameEvent =
   | { t: 'core' }
   | { t: 'nudge'; dir: number }
   | { t: 'dynamite' }
-  | { t: 'combo'; n: number };
+  | { t: 'combo'; n: number }
+  | { t: 'fever' }
+  | { t: 'revive' }
+  | { t: 'stuck' };
 
 export interface RunInit {
   seed: number;
@@ -45,6 +48,8 @@ export interface RunInit {
   bestDepth: number;
   /** Biome indices whose milestone was already paid. */
   milestones: number[];
+  /** Scripted first run: guaranteed specials and wait for the first tap. */
+  tutorial?: boolean;
 }
 
 export interface RunResult {
@@ -65,6 +70,11 @@ export interface RunResult {
   core: boolean;
   discovered: string[];
   time: number;
+  tnt: number;
+  chests: number;
+  tierUps: number;
+  ores: number;
+  fevers: number;
 }
 
 interface PendingBlast {
@@ -122,6 +132,17 @@ export class Run {
   discovered = new Set<string>();
   over = false;
   core = false;
+  /** Frozen until the player's first tap (tutorial). */
+  hold = false;
+  feverTimer = 0;
+  revives = 0;
+
+  tntCount = 0;
+  chestCount = 0;
+  tierUps = 0;
+  oreCount = 0;
+  fevers = 0;
+  private bouncesSinceBreak = 0;
 
   events: GameEvent[] = [];
   private blasts: PendingBlast[] = [];
@@ -144,6 +165,46 @@ export class Run {
     this.nudges = init.stats.nudgeCharges;
     this.dynamite = init.stats.dynamite;
     this.totems = init.stats.totems;
+    if (init.tutorial) this.setupTutorial();
+  }
+
+  /** First run: every key "wow" event happens in the first ~30 m. */
+  private setupTutorial(): void {
+    const w = this.world;
+    const cx = Math.floor(this.x);
+    const place: [number, number, B][] = [
+      [cx - 1, 6, B.WORKBENCH],
+      [cx, 6, B.WORKBENCH],
+      [cx + 1, 6, B.WORKBENCH],
+      [cx, 13, B.CHEST],
+      [cx - 1, 19, B.TNT],
+      [cx + 1, 20, B.TNT],
+      [cx, 22, B.TNT],
+      [cx, 28, B.ANVIL],
+      [cx - 1, 34, B.WORKBENCH],
+      [cx, 34, B.WORKBENCH],
+      [cx + 1, 34, B.WORKBENCH],
+    ];
+    // soft dirt column above the first workbench: the pickaxe drills straight into it
+    for (let y = 1; y < 6; y++) for (let x = cx - 1; x <= cx + 1; x++) w.set(x, y, B.DIRT);
+    for (const [x, y, id] of place) w.set(x, y, id);
+    this.hold = true;
+  }
+
+  get fever(): boolean {
+    return this.feverTimer > 0;
+  }
+
+  /** "Second chance": continue a broken run once (rewarded ad). */
+  revive(): boolean {
+    if (!this.over || this.core || this.durability > 0) return false;
+    this.over = false;
+    this.revives++;
+    this.durability = Math.round(this.maxDur * 0.5);
+    this.vy = -8;
+    this.slow(0.8, 0.3);
+    this.emit({ t: 'revive' });
+    return true;
   }
 
   get depth(): number {
@@ -163,7 +224,7 @@ export class Run {
   }
 
   get damagePerHit(): number {
-    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency);
+    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency) * (this.fever ? RUN.feverDamage : 1);
   }
 
   private computeMaxDur(tier: number): number {
@@ -182,6 +243,13 @@ export class Run {
   // ───────────────────────── input ─────────────────────────
 
   nudge(dir: -1 | 1): boolean {
+    if (this.hold) {
+      this.hold = false;
+      // gentle first push so the scripted workbench right below is never missed
+      this.vx = dir * 1;
+      this.emit({ t: 'nudge', dir });
+      return true;
+    }
     if (this.over || this.nudges <= 0) return false;
     this.nudges--;
     this.vx = dir * PHYS.nudgeImpulse + this.vx * 0.3;
@@ -191,7 +259,7 @@ export class Run {
   }
 
   useDynamite(): boolean {
-    if (this.over || this.dynamite <= 0) return false;
+    if (this.over || this.hold || this.dynamite <= 0) return false;
     this.dynamite--;
     this.dynamiteUsed++;
     this.emit({ t: 'dynamite' });
@@ -202,7 +270,7 @@ export class Run {
   // ───────────────────────── simulation ─────────────────────────
 
   step(dtReal: number): void {
-    if (this.over) return;
+    if (this.over || this.hold) return;
     if (this.hitstop > 0) {
       this.hitstop -= dtReal;
       return;
@@ -220,6 +288,7 @@ export class Run {
       if (this.comboTimer <= 0) this.combo = 0;
     }
     if (this.furnaceTimer > 0) this.furnaceTimer -= dt;
+    if (this.feverTimer > 0) this.feverTimer -= dt;
     if (this.nudges < this.stats.nudgeCharges) {
       this.nudgeTimer += dt;
       if (this.nudgeTimer >= this.stats.nudgeRegen) {
@@ -366,6 +435,7 @@ export class Run {
       this.y += ny * pen;
       const frac = Number.isFinite(before) ? Math.max(0, this.world.hpAt(cx, cy) / blockHp(id, cy)) : 1;
       this.emit({ t: 'hit', x: cx, y: cy, id, dmg, crit, frac, speed: vn });
+      if (++this.bouncesSinceBreak === 3) this.emit({ t: 'stuck' });
       this.reflect(nx, ny, vn, PHYS.restitution);
       if (ny < -0.5) {
         this.vy = Math.min(this.vy, -PHYS.minBounce);
@@ -420,6 +490,7 @@ export class Run {
       if (this.furnaceTimer > 0) v *= 2;
       v *= 1 + 0.5 * this.enchants.fortune;
     }
+    if (this.fever) v *= RUN.feverCoins;
     return v;
   }
 
@@ -435,6 +506,13 @@ export class Run {
     this.comboTimer = RUN.comboWindow;
     if (this.combo > this.bestCombo) this.bestCombo = this.combo;
     if (this.combo % 10 === 0) this.emit({ t: 'combo', n: this.combo });
+    if (this.combo % RUN.feverCombo === 0) {
+      this.feverTimer = RUN.feverTime;
+      this.fevers++;
+      this.emit({ t: 'fever' });
+    }
+    this.bouncesSinceBreak = 0;
+    if (def.ore) this.oreCount++;
 
     const coins = this.blockValue(id, y) * this.comboMult;
     this.oreCoins += coins;
@@ -461,6 +539,7 @@ export class Run {
           this.maxDur = this.computeMaxDur(this.tier);
           const heal = (this.maxDur - oldMax) + this.maxDur * RUN.workbenchHeal * this.healFactor();
           this.durability = Math.min(this.maxDur, this.durability + heal);
+          this.tierUps++;
           this.emit({ t: 'tierUp', tier: this.tier, maxed: false });
         } else {
           this.bonusCoins += this.blockValue(B.DIAMOND, y) * 5;
@@ -477,9 +556,11 @@ export class Run {
         break;
       }
       case 'tnt':
+        this.tntCount++;
         this.queueBlast(x + 0.5, y + 0.5, RUN.tntRadius, cause === 'blast' ? RUN.tntChainFuse : RUN.tntFuse, 0);
         break;
       case 'chest':
+        this.chestCount++;
         this.openChest(x, y);
         break;
       case 'furnace':
@@ -573,6 +654,7 @@ export class Run {
         if (def.special === 'tnt') {
           this.world.set(cx, cy, B.AIR);
           this.blocks++;
+          this.tntCount++;
           this.queueBlast(cx + 0.5, cy + 0.5, RUN.tntRadius, RUN.tntChainFuse, chain + 1);
           continue;
         }
@@ -652,6 +734,11 @@ export class Run {
       core: this.core,
       discovered: [...this.discovered],
       time: this.time,
+      tnt: this.tntCount,
+      chests: this.chestCount,
+      tierUps: this.tierUps,
+      ores: this.oreCount,
+      fevers: this.fevers,
     };
   }
 

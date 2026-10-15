@@ -1,0 +1,1012 @@
+import { track } from '../analytics';
+import { sfx } from '../audio/sfx';
+import { BLOCKS } from '../game/blocks';
+import { BIOMES, MAX_TIER, PRESTIGE, SHOP, TIERS, UPGRADES, type UpgradeId } from '../game/config';
+import {
+  buyDynamite,
+  buyForge,
+  buyTotem,
+  buyUpgrade,
+  canBuyUpgrade,
+  canPrestige,
+  deriveStats,
+  doPrestige,
+  dynamiteCost,
+  forgeCost,
+  prestigeShards,
+  upgradeCost,
+  upgradeDef,
+} from '../game/economy';
+import {
+  ACHIEVEMENTS,
+  COLLECTIBLE,
+  DAILY,
+  FEATURE_LEVEL,
+  achievementClaimable,
+  achievementGems,
+  achievementsClaimable,
+  claimAchievement,
+  claimDaily,
+  claimQuest,
+  claimQuestBonus,
+  collectIdle,
+  dailyStatus,
+  ensureQuests,
+  freeChestReady,
+  idleFull,
+  idlePending,
+  levelReward,
+  openFreeChest,
+  questBonusReady,
+  questsClaimable,
+  rerollQuest,
+  rewardScale,
+  trackQuests,
+  xpForLevel,
+  type ChestRarity,
+  type Feature,
+  type Reward,
+} from '../game/meta';
+import { nextGoal, unlockedCheckpoints } from '../game/progress';
+import { Rng } from '../game/rng';
+import { setVibration, vibrate } from '../platform';
+import type { App } from './app';
+import { $, bar, closeModal, hms, modalOpen, msToMidnight, openModal, rewardTiles, toast } from './dom';
+import { fmt } from './format';
+import { setLang, t } from './i18n';
+import { UPGRADE_ICON, icon } from './icons';
+
+export type ScreenId = 'home' | 'upgrades' | 'forge' | 'quests' | 'collection' | 'shop' | 'settings';
+
+const NAV: { id: ScreenId; icon: string; label: string; feature: Feature }[] = [
+  { id: 'upgrades', icon: 'hammer', label: 'upgrades', feature: 'upgrades' },
+  { id: 'forge', icon: 'fire', label: 'forge', feature: 'forge' },
+  { id: 'home', icon: 'home', label: 'play', feature: 'upgrades' },
+  { id: 'quests', icon: 'scroll', label: 'quests', feature: 'quests' },
+  { id: 'shop', icon: 'bag', label: 'shop', feature: 'items' },
+];
+
+export class Screens {
+  private host = $('screen');
+  private questTab: 'quests' | 'achievements' = 'quests';
+  private confirmPrestige = false;
+  private popupQueue: (() => void)[] = [];
+
+  constructor(private app: App) {}
+
+  private get s() {
+    return this.app.save;
+  }
+
+  // ───────────────────────── plumbing ─────────────────────────
+
+  clear(): void {
+    this.host.className = 'screen';
+    this.host.innerHTML = '';
+  }
+
+  private set(html: string, cls: string): void {
+    this.host.className = `screen ${cls}`;
+    this.host.innerHTML = html;
+    this.host.scrollTop = 0;
+  }
+
+  private on(sel: string, fn: (el: HTMLElement) => void, root: ParentNode = this.host): void {
+    root.querySelectorAll<HTMLElement>(sel).forEach((el) =>
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        sfx.unlock();
+        fn(el);
+      }),
+    );
+  }
+
+  private wallet(): string {
+    const s = this.s;
+    return `<div class="wallet">
+      <span class="pill" id="wCoins">${icon('coin', 32)}${fmt(s.coins)}</span>
+      <span class="pill" id="wGems">${icon('gem', 32)}${fmt(s.gems)}</span>
+      ${s.shards ? `<span class="pill">${icon('shard', 32)}${s.shards}</span>` : ''}
+    </div>`;
+  }
+
+  private header(title: string): string {
+    return `<div class="topbar"><button class="icon-btn" data-a="back">${icon('back', 26)}</button><h2>${title}</h2>${this.wallet()}</div>`;
+  }
+
+  private bindHeader(): void {
+    this.on('[data-a=back]', () => {
+      sfx.click();
+      this.show('home');
+    });
+  }
+
+  show(id: ScreenId): void {
+    this.app.goMenu();
+    this.app.screen = id;
+    this.confirmPrestige = false;
+    track('screen_view', { id });
+    switch (id) {
+      case 'home':
+        this.home();
+        break;
+      case 'upgrades':
+        this.upgrades();
+        break;
+      case 'forge':
+        this.forge();
+        break;
+      case 'quests':
+        this.quests();
+        break;
+      case 'collection':
+        this.collection();
+        break;
+      case 'shop':
+        this.shop();
+        break;
+      case 'settings':
+        this.settings();
+        break;
+    }
+    this.nav(true);
+  }
+
+  private rerender(): void {
+    this.show(this.app.screen);
+  }
+
+  private badgeCount(id: ScreenId): number {
+    const s = this.s;
+    const now = this.app.now();
+    switch (id) {
+      case 'upgrades':
+        return UPGRADES.filter((u) => canBuyUpgrade(s, u.id)).length;
+      case 'forge': {
+        const c = forgeCost(s);
+        return c !== null && s.coins >= c && this.app.isUnlocked('forge') ? 1 : 0;
+      }
+      case 'quests':
+        ensureQuests(s, now);
+        return (this.app.isUnlocked('quests') ? questsClaimable(s) : 0) + (this.app.isUnlocked('achievements') ? achievementsClaimable(s) : 0);
+      case 'shop':
+        return (this.app.isUnlocked('freeChest') && freeChestReady(s, now) ? 1 : 0) + (canPrestige(s) ? 1 : 0);
+      default:
+        return 0;
+    }
+  }
+
+  nav(visible: boolean): void {
+    const host = $('nav');
+    host.classList.toggle('hidden', !visible);
+    if (!visible) return;
+    host.innerHTML = NAV.map((n) => {
+      const lockedLvl = n.id === 'home' ? 0 : this.app.isUnlocked(n.feature) ? 0 : FEATURE_LEVEL[n.feature];
+      const b = lockedLvl ? 0 : this.badgeCount(n.id);
+      return `<button class="${this.app.screen === n.id ? 'on' : ''} ${lockedLvl ? 'lock' : ''}" data-nav="${n.id}">
+        ${icon(lockedLvl ? 'lock' : n.icon, 34)}<span>${lockedLvl ? t('locked', { n: lockedLvl }) : t(n.label)}</span>
+        ${b ? `<span class="badge">${b > 9 ? '9+' : b}</span>` : ''}</button>`;
+    }).join('');
+    this.on(
+      '[data-nav]',
+      (el) => {
+        const id = el.dataset.nav as ScreenId;
+        const n = NAV.find((x) => x.id === id)!;
+        if (id !== 'home' && !this.app.isUnlocked(n.feature)) {
+          sfx.error();
+          toast(`${icon('lock', 26)}${t('lockedHint', { n: FEATURE_LEVEL[n.feature] })}`);
+          return;
+        }
+        sfx.click();
+        this.show(id);
+      },
+      host,
+    );
+  }
+
+  /** Bump the wallet after a purchase / reward without a full rerender. */
+  private bumpWallet(): void {
+    for (const id of ['wCoins', 'wGems']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.classList.remove('bump');
+      void el.offsetWidth;
+      el.classList.add('bump');
+    }
+  }
+
+  // ───────────────────────── home ─────────────────────────
+
+  private home(): void {
+    const s = this.s;
+    const cps = unlockedCheckpoints(s);
+    if (!cps.includes(s.startDepth)) s.startDepth = 0;
+    const goal = nextGoal(s);
+    const goalHtml = goal
+      ? `<div class="panel goal"><div class="row"><span><span class="tag">${t('goal')}</span><br>${
+          goal.biome > 0 ? t('goalBiome', { biome: t(`biome.${BIOMES[goal.biome].key}`) }) : t('goalCore')
+        }</span><span>${s.bestDepth} / ${goal.depth} ${t('m')}</span></div>${bar(s.bestDepth / goal.depth, 'cyan')}</div>`
+      : `<div class="panel goal center">${t('goalDone')}</div>`;
+    const lift =
+      cps.length > 1
+        ? `<div class="chips"><span class="label">${t('lift')}:</span>${cps
+            .map((d) => `<button class="chip ${d === s.startDepth ? 'on' : ''}" data-d="${d}">${d} ${t('m')}</button>`)
+            .join('')}</div>`
+        : '';
+    const xpNeed = xpForLevel(s.level);
+    this.set(
+      `<div class="topbar">
+        <div class="lvl"><div class="star">${icon('star', 44)}<b>${s.level}</b></div>${bar(s.xp / xpNeed, 'purple')}</div>
+        ${this.wallet()}
+        <button class="icon-btn" data-a="settings">${icon('gear', 28)}</button>
+      </div>
+      <div id="side">${this.sideHtml()}</div>
+      <div class="home-main">
+        <h1><span class="a">${t('title1')}</span><span class="b">${t('title2')}</span></h1>
+        <div class="hero">
+          <img src="${this.app.pickUrl(s.forgeTier)}" alt="">
+          <div class="name ol">${this.app.tierName(s.forgeTier)}</div>
+          <div class="record ol">${icon('trophy', 24)}${t('best')}: ${s.bestDepth} ${t('m')}</div>
+        </div>
+      </div>
+      <div class="home-bottom">
+        ${goalHtml}
+        ${lift}
+        <button class="btn lg wide pulse" data-a="play">${icon('play', 30)}<span>${t('play')}</span></button>
+      </div>`,
+      'home',
+    );
+    this.on('[data-a=play]', () => {
+      sfx.click();
+      this.app.startRun();
+    });
+    this.on('[data-a=settings]', () => {
+      sfx.click();
+      this.show('settings');
+    });
+    this.on('[data-d]', (el) => {
+      s.startDepth = Number(el.dataset.d);
+      sfx.click();
+      this.app.persist();
+      this.home();
+    });
+    this.lastSideKey = this.sideKey();
+    this.bindSide();
+  }
+
+  private sideHtml(): string {
+    const s = this.s;
+    const now = this.app.now();
+    const left: string[] = [];
+    const right: string[] = [];
+    if (this.app.isUnlocked('daily')) {
+      const d = dailyStatus(s, now);
+      left.push(`<button class="tile ${d.canClaim ? 'ready' : ''}" data-side="daily"><div class="box">${icon('gift', 40)}</div>
+        <span class="cap">${t('daily')}</span>${d.canClaim ? '<span class="badge">!</span>' : ''}</button>`);
+    }
+    if (this.app.isUnlocked('freeChest')) {
+      const ready = freeChestReady(s, now);
+      left.push(`<button class="tile ${ready ? 'ready' : ''}" data-side="chest"><div class="box">${icon('chest', 42)}</div>
+        <span class="cap" id="chestCap">${ready ? t('freeChestReady') : hms(s.freeChestAt - now)}</span>${ready ? '<span class="badge">!</span>' : ''}</button>`);
+    }
+    if (this.app.isUnlocked('idle')) {
+      const pending = idlePending(s, now);
+      const full = idleFull(s, now);
+      const locked = s.bestDepth < 20;
+      right.push(`<button class="tile ${full >= 1 ? 'ready' : ''}" data-side="idle"><div class="box">${icon('cart', 42)}</div>
+        <span class="cap" id="idleCap">${locked ? t('idleLocked') : fmt(pending)}</span>${locked ? '' : bar(full, 'gold')}</button>`);
+    }
+    return `<div class="side l">${left.join('')}</div><div class="side r">${right.join('')}</div>`;
+  }
+
+  private bindSide(): void {
+    const side = document.getElementById('side');
+    if (!side) return;
+    this.on('[data-side=daily]', () => this.daily(), side);
+    this.on(
+      '[data-side=chest]',
+      () => {
+        const res = openFreeChest(this.s, this.app.now(), new Rng((Math.random() * 1e9) | 0));
+        if (!res) {
+          sfx.error();
+          return;
+        }
+        track('chest_open', { source: 'free', rarity: res.rarity });
+        this.app.persist();
+        this.chestModal(res.rarity, res.reward);
+      },
+      side,
+    );
+    this.on(
+      '[data-side=idle]',
+      () => {
+        if (this.s.bestDepth < 20) {
+          sfx.error();
+          return;
+        }
+        const coins = collectIdle(this.s, this.app.now());
+        if (coins > 0) {
+          sfx.chest();
+          vibrate('medium');
+          toast(`${icon('cart', 28)}<span>${t('idle')}: +${fmt(coins)} ${icon('coin', 20)}</span>`);
+          trackQuests(this.s, { coins }, this.app.now());
+          track('idle_collect', { coins });
+        } else sfx.click();
+        this.app.persist();
+        this.home();
+        this.nav(true);
+      },
+      side,
+    );
+  }
+
+  /** State that changes the side tiles' look; text-only changes are patched in place. */
+  private sideKey(): string {
+    const s = this.s;
+    const now = this.app.now();
+    return [dailyStatus(s, now).canClaim, freeChestReady(s, now), idleFull(s, now) >= 1, s.bestDepth >= 20, s.level].join();
+  }
+
+  private lastSideKey = '';
+
+  /** Called a few times a second on menus: live timers without recreating buttons (a rebuilt node would eat taps). */
+  refreshTimers(): void {
+    if (this.app.screen === 'home') {
+      const side = document.getElementById('side');
+      const key = this.sideKey();
+      if (side && key !== this.lastSideKey && !modalOpen()) {
+        this.lastSideKey = key;
+        side.innerHTML = this.sideHtml();
+        this.bindSide();
+      } else {
+        const now = this.app.now();
+        const cc = document.getElementById('chestCap');
+        if (cc && !freeChestReady(this.s, now)) cc.textContent = hms(this.s.freeChestAt - now);
+        const ic = document.getElementById('idleCap');
+        if (ic && this.s.bestDepth >= 20) {
+          ic.textContent = fmt(idlePending(this.s, now));
+          const fill = ic.parentElement?.querySelector<HTMLElement>('.bar > i');
+          fill?.style.setProperty('--p', `${(idleFull(this.s, now) * 100).toFixed(1)}%`);
+        }
+      }
+    }
+    const qt = document.getElementById('qTimer');
+    if (qt) qt.textContent = t('questsReset', { t: hms(msToMidnight(this.app.now())) });
+    const fc = document.getElementById('fcTimer');
+    if (fc) fc.textContent = hms(this.s.freeChestAt - this.app.now());
+  }
+
+  /** Popups that should appear on the home screen (level-ups, daily reward). */
+  autoPopups(): void {
+    const s = this.s;
+    const rep = this.app.report;
+    if (rep) {
+      for (const lvl of rep.levelsReached) this.popupQueue.push(() => this.levelUpModal(lvl));
+      rep.levelsReached = [];
+    }
+    if (this.app.isUnlocked('daily') && dailyStatus(s, this.app.now()).canClaim) this.popupQueue.push(() => this.daily());
+    this.nextPopup();
+  }
+
+  private nextPopup(): void {
+    if (modalOpen()) return;
+    const next = this.popupQueue.shift();
+    if (next) next();
+  }
+
+  private closeAndNext(): void {
+    closeModal();
+    this.rerender();
+    setTimeout(() => this.nextPopup(), 150);
+  }
+
+  // ───────────────────────── upgrades ─────────────────────────
+
+  private upgradeText(id: UpgradeId, lvl: number): string {
+    const s = this.s;
+    const now = deriveStats(s);
+    const next = deriveStats({ ...s, upgrades: { ...s.upgrades, [id]: lvl + 1 } });
+    const f2 = (n: number) => n.toFixed(2).replace(/\.?0+$/, '');
+    const pair: Record<UpgradeId, [string | number, string | number]> = {
+      durability: [now.maxDurBase, next.maxDurBase],
+      power: [f2(now.powerMult), f2(next.powerMult)],
+      fortune: [f2(now.coinMult), f2(next.coinMult)],
+      luck: [f2(now.luckMult), f2(next.luckMult)],
+      crit: [Math.round(now.critChance * 100), Math.round(next.critChance * 100)],
+      control: [`${now.nudgeCharges} · ${now.nudgeRegen.toFixed(1)}s`, `${next.nudgeCharges} · ${next.nudgeRegen.toFixed(1)}s`],
+      blast: [f2(now.blastRadius), f2(next.blastRadius)],
+      weight: [f2(now.maxFallMult), f2(next.maxFallMult)],
+    };
+    const [a, b] = pair[id];
+    return t(`upd.${id}`, { a, b });
+  }
+
+  private upgrades(): void {
+    const s = this.s;
+    const hintId = !s.upgradeHintDone ? UPGRADES.find((u) => canBuyUpgrade(s, u.id))?.id : undefined;
+    const cards = UPGRADES.map((u) => {
+      const lvl = s.upgrades[u.id];
+      const maxed = lvl >= upgradeDef(u.id).max;
+      const cost = upgradeCost(u.id, lvl);
+      const afford = s.coins >= cost;
+      return `<div class="card">
+        <div class="ic">${icon(UPGRADE_ICON[u.id], 38)}</div>
+        <div class="info"><div class="nm">${t(`up.${u.id}`)}<span class="lv">${t('lvl')} ${lvl}</span></div>
+        <div class="ds">${maxed ? t('max') : this.upgradeText(u.id, lvl)}</div></div>
+        ${
+          maxed
+            ? `<button class="btn sm off" disabled>${t('max')}</button>`
+            : `<button class="btn sm ${afford ? 'gold' : 'off'} ${hintId === u.id ? 'pulse' : ''}" data-up="${u.id}">${icon('coin', 22)}<span class="${afford ? '' : 'price-bad'}">${fmt(cost)}</span></button>`
+        }
+      </div>`;
+    }).join('');
+    this.set(
+      `${this.header(t('upgrades'))}
+       ${hintId ? `<div class="coach-inline center ol" style="margin:12px 0 0;font-size:18px;font-weight:900">${t('hintUpgrade')} ${icon('hand', 28)}</div>` : ''}
+       <div class="list" style="margin-top:14px">${cards}</div>`,
+      'solid',
+    );
+    this.bindHeader();
+    this.on('[data-up]', (el) => {
+      const id = el.dataset.up as UpgradeId;
+      const lvl = s.upgrades[id];
+      if (buyUpgrade(s, id)) {
+        sfx.buy();
+        vibrate('light');
+        s.upgradeHintDone = true;
+        this.app.notifyQuests(trackQuests(s, { upgrade: 1 }, this.app.now()));
+        track('purchase_upgrade', { id, level: lvl + 1, cost: upgradeCost(id, lvl) });
+        this.app.persist();
+        this.upgrades();
+        this.bumpWallet();
+        this.nav(true);
+      } else sfx.error();
+    });
+  }
+
+  // ───────────────────────── forge ─────────────────────────
+
+  private forge(): void {
+    const s = this.s;
+    const cost = forgeCost(s);
+    const cur = s.forgeTier;
+    const tiers = TIERS.map((tr, i) => {
+      const bonus = [`${icon('hammer', 18)} x${tr.dmg}`, `${icon('heart', 18)} x${tr.dur}`];
+      if (tr.coinBonus) bonus.push(`${icon('coin', 18)} +${tr.coinBonus * 100}%`);
+      if (tr.fireproof) bonus.push(`${icon('fire', 18)}`);
+      return `<div class="card ${i > cur ? 'dim' : ''}"><div class="ic"><img src="${this.app.pickUrl(i)}"></div>
+        <div class="info"><div class="nm">${this.app.tierName(i)}</div><div class="ds">${bonus.join(' · ')}</div></div>
+        ${i <= cur ? icon('check', 28) : ''}</div>`;
+    }).join('');
+    this.set(
+      `${this.header(t('forge'))}
+       <div class="panel center" style="margin-top:14px">
+         <div class="forge-view"><img src="${this.app.pickUrl(cur)}">${
+           cur < MAX_TIER ? `${icon('play', 30)}<img src="${this.app.pickUrl(cur + 1)}">` : ''
+         }</div>
+         <div class="nm ol" style="font-size:22px;font-weight:900">${this.app.tierName(cur)}${cur < MAX_TIER ? ' → ' + this.app.tierName(cur + 1) : ''}</div>
+         <p class="sub">${t('forgeDesc')}</p>
+         ${
+           cost === null
+             ? `<p class="ol">${t('forgeMax')}</p>`
+             : `<button class="btn ${s.coins >= cost ? 'gold' : 'off'} wide" data-a="forge">${icon('fire', 28)}<span>${icon('coin', 24)} <span class="${s.coins >= cost ? '' : 'price-bad'}">${fmt(cost)}</span></span></button>`
+         }
+       </div>
+       <div class="list" style="margin-top:14px">${tiers}</div>`,
+      'solid',
+    );
+    this.bindHeader();
+    this.on('[data-a=forge]', () => {
+      if (buyForge(s)) {
+        sfx.tierUp();
+        vibrate('heavy');
+        this.app.notifyQuests(trackQuests(s, { upgrade: 1 }, this.app.now()));
+        track('purchase_forge', { tier: s.forgeTier });
+        this.app.persist();
+        this.forge();
+        this.bumpWallet();
+        this.nav(true);
+      } else sfx.error();
+    });
+  }
+
+  // ───────────────────────── quests & achievements ─────────────────────────
+
+  private quests(): void {
+    const s = this.s;
+    const now = this.app.now();
+    const qs = ensureQuests(s, now);
+    const achUnlocked = this.app.isUnlocked('achievements');
+    const tab = achUnlocked ? this.questTab : 'quests';
+    let body: string;
+    if (tab === 'quests') {
+      const cards = qs.list
+        .map((q, i) => {
+          const done = q.progress >= q.target;
+          const action = q.claimed
+            ? icon('check', 34)
+            : done
+              ? `<button class="btn sm pulse" data-claim="${i}">${t('claim')}</button>`
+              : !qs.rerolled
+                ? `<button class="btn sm ghost" data-reroll="${i}">${icon('refresh', 20)}</button>`
+                : '';
+          return `<div class="card ${q.claimed ? 'done' : ''}"><div class="ic">${icon('scroll', 36)}</div>
+            <div class="info"><div class="nm">${t(`q.${q.type}`, { n: fmt(q.target) })}</div>
+            <div style="margin-top:6px">${bar(q.progress / q.target, done ? '' : 'gold', `${fmt(q.progress)} / ${fmt(q.target)}`)}</div></div>${action}</div>`;
+        })
+        .join('');
+      const claimedN = qs.list.filter((q) => q.claimed).length;
+      const bonusReady = questBonusReady(s);
+      body = `<div class="sub center" id="qTimer">${t('questsReset', { t: hms(msToMidnight(now)) })}</div>
+        <div class="list" style="margin-top:10px">${cards}
+        <div class="card ${qs.bonusClaimed ? 'done' : ''}"><div class="ic">${icon('chest', 40)}</div>
+          <div class="info"><div class="nm">${t('questsBonus')}</div><div style="margin-top:6px">${bar(claimedN / 3, 'purple', `${claimedN} / 3`)}</div></div>
+          ${qs.bonusClaimed ? icon('check', 34) : `<button class="btn sm purple ${bonusReady ? 'pulse' : 'off'}" data-a="bonus" ${bonusReady ? '' : 'disabled'}>${t('open')}</button>`}
+        </div></div>`;
+    } else {
+      body = `<div class="list">${ACHIEVEMENTS.map((a) => {
+        const claimed = s.achievements[a.id] ?? 0;
+        const all = claimed >= a.tiers.length;
+        const target = a.tiers[Math.min(claimed, a.tiers.length - 1)];
+        const v = a.value(s);
+        const can = achievementClaimable(s, a);
+        const stars = `<span class="stars">${a.tiers.map((_, i) => `<span style="opacity:${i < claimed ? 1 : 0.25}">${icon('star', 14)}</span>`).join('')}</span>`;
+        return `<div class="card ${all ? 'done' : ''}"><div class="ic">${icon(a.icon, 36)}</div>
+          <div class="info"><div class="nm">${t(`ach.${a.id}`)} ${stars}</div>
+          <div class="ds">${all ? t('achDone') : t(`achd.${a.id}`, { n: fmt(target) })}</div>
+          ${all ? '' : `<div style="margin-top:6px">${bar(v / target, can ? '' : 'cyan', `${fmt(Math.min(v, target))} / ${fmt(target)}`)}</div>`}</div>
+          ${all ? icon('trophy', 34) : `<button class="btn sm purple ${can ? 'pulse' : 'off'}" data-ach="${a.id}" ${can ? '' : 'disabled'}>${icon('gem', 20)}${achievementGems(claimed)}</button>`}
+        </div>`;
+      }).join('')}</div>`;
+    }
+    const qBadge = questsClaimable(s);
+    const aBadge = achUnlocked ? achievementsClaimable(s) : 0;
+    this.set(
+      `${this.header(t('quests'))}
+       <div class="tabs">
+         <button class="tab ${tab === 'quests' ? 'on' : ''}" data-tab="quests">${t('questsTitle')}${qBadge ? `<span class="badge">${qBadge}</span>` : ''}</button>
+         <button class="tab ${tab === 'achievements' ? 'on' : ''}" data-tab="achievements">${achUnlocked ? t('achievements') : `${icon('lock', 16)} ${t('locked', { n: FEATURE_LEVEL.achievements })}`}${aBadge ? `<span class="badge">${aBadge}</span>` : ''}</button>
+       </div>
+       ${body}
+       <button class="btn blue wide" data-a="collection" style="margin-top:6px">${icon('book', 28)}<span>${t('collection')} · ${s.discovered.length}/${COLLECTIBLE.length}</span></button>`,
+      'solid',
+    );
+    this.bindHeader();
+    this.on('[data-tab]', (el) => {
+      if (el.dataset.tab === 'achievements' && !achUnlocked) {
+        sfx.error();
+        return;
+      }
+      sfx.click();
+      this.questTab = el.dataset.tab as 'quests' | 'achievements';
+      this.quests();
+    });
+    this.on('[data-claim]', (el) => {
+      const r = claimQuest(s, Number(el.dataset.claim), this.app.now());
+      if (!r) return;
+      track('quest_claim', { type: qs.list[Number(el.dataset.claim)].type });
+      this.app.persist();
+      this.rewardModal(t('questDoneToast'), r, 'scroll');
+    });
+    this.on('[data-reroll]', (el) => {
+      if (rerollQuest(s, Number(el.dataset.reroll), this.app.now())) {
+        sfx.click();
+        this.app.persist();
+        this.quests();
+      }
+    });
+    this.on('[data-a=bonus]', () => {
+      const r = claimQuestBonus(s, new Rng((Math.random() * 1e9) | 0));
+      if (!r) return;
+      track('chest_open', { source: 'quests', rarity: 'rare' });
+      this.app.persist();
+      this.chestModal('rare', r);
+    });
+    this.on('[data-ach]', (el) => {
+      const gems = claimAchievement(s, el.dataset.ach!);
+      if (!gems) return;
+      track('achievement_claim', { id: el.dataset.ach!, tier: s.achievements[el.dataset.ach!] });
+      this.app.persist();
+      this.rewardModal(t('achievementToast'), { gems }, 'trophy');
+    });
+    this.on('[data-a=collection]', () => {
+      if (!this.app.isUnlocked('collection')) return sfx.error();
+      sfx.click();
+      this.show('collection');
+    });
+  }
+
+  // ───────────────────────── collection ─────────────────────────
+
+  private collection(): void {
+    const s = this.s;
+    const cells = COLLECTIBLE.map((key) => {
+      const def = BLOCKS.find((b) => b?.key === key)!;
+      const known = s.discovered.includes(key);
+      return `<div class="cell ${known ? '' : 'unknown'}"><img src="${this.app.blockUrl(def.id)}"><span>${known ? t(`block.${key}`) : t('unknown')}</span></div>`;
+    }).join('');
+    this.set(
+      `${this.header(t('collection'))}
+       <div class="panel" style="margin:14px 0 12px"><div class="row" style="display:flex;justify-content:space-between;margin-bottom:6px;font-weight:800">
+         <span>${icon('book', 24)} ${t('collectionDesc', { a: s.discovered.length, b: COLLECTIBLE.length })}</span></div>
+         ${bar(s.discovered.length / COLLECTIBLE.length, 'cyan')}</div>
+       <div class="grid">${cells}</div>`,
+      'solid',
+    );
+    this.bindHeader();
+  }
+
+  // ───────────────────────── shop ─────────────────────────
+
+  private shop(): void {
+    const s = this.s;
+    const now = this.app.now();
+    const dc = dynamiteCost(s);
+    const chestUnlocked = this.app.isUnlocked('freeChest');
+    const ready = freeChestReady(s, now);
+    const prestigeOpen = s.bestDepth >= PRESTIGE.unlockDepth || s.prestiges > 0;
+    const shards = prestigeShards(s);
+    this.set(
+      `${this.header(t('shop'))}
+       <div class="list" style="margin-top:14px">
+         ${
+           chestUnlocked
+             ? `<div class="card"><div class="ic">${icon('chest', 42)}</div><div class="info"><div class="nm">${t('freeChest')}</div>
+                <div class="ds">${t('rarity.common')} → ${t('rarity.legendary')}</div></div>
+                ${ready ? `<button class="btn sm pulse" data-a="chest">${t('open')}</button>` : `<button class="btn sm off" disabled id="fcTimer">${hms(s.freeChestAt - now)}</button>`}</div>`
+             : ''
+         }
+         <div class="card"><div class="ic">${icon('bomb', 40)}</div><div class="info"><div class="nm">${t('dynamite')}<span class="lv">${t('owned', { n: s.dynamite })}</span></div><div class="ds">${t('dynamiteDesc')}</div></div>
+           <button class="btn sm ${s.coins >= dc ? 'gold' : 'off'}" data-a="dyn">${icon('coin', 22)}<span class="${s.coins >= dc ? '' : 'price-bad'}">${fmt(dc)}</span></button></div>
+         <div class="card"><div class="ic">${icon('totem', 40)}</div><div class="info"><div class="nm">${t('totem')}<span class="lv">${t('owned', { n: s.totems })}</span></div><div class="ds">${t('totemDesc')}</div></div>
+           <button class="btn sm ${s.gems >= SHOP.totemGems ? 'purple' : 'off'}" data-a="totem">${icon('gem', 22)}<span class="${s.gems >= SHOP.totemGems ? '' : 'price-bad'}">${SHOP.totemGems}</span></button></div>
+       </div>
+       <div class="panel center" style="margin-top:6px">
+         <div>${icon('shard', 56)}</div>
+         <h2 style="font-size:22px">${t('prestige')} · ${t('shards')}: ${s.shards}</h2>
+         <p class="sub">${t('prestigeDesc')}</p>
+         ${
+           !prestigeOpen
+             ? `<button class="btn off wide" disabled>${icon('lock', 24)}<span>${t('prestigeLocked', { d: PRESTIGE.unlockDepth })}</span></button>`
+             : canPrestige(s)
+               ? `<button class="btn purple wide" data-a="prestige">${this.confirmPrestige ? t('confirm') : `${t('prestigeBtn', { n: shards })} ${icon('shard', 24)}`}</button>`
+               : `<p class="ol">${t('prestigeNone')}</p>`
+         }
+       </div>`,
+      'solid',
+    );
+    this.bindHeader();
+    const after = (ok: boolean, ev: string, params: Record<string, string | number> = {}) => {
+      if (ok) {
+        sfx.buy();
+        vibrate('light');
+        track(ev, params);
+        this.app.persist();
+        this.shop();
+        this.bumpWallet();
+        this.nav(true);
+      } else sfx.error();
+    };
+    this.on('[data-a=dyn]', () => after(buyDynamite(s), 'purchase_item', { id: 'dynamite', cost: dc }));
+    this.on('[data-a=totem]', () => after(buyTotem(s), 'purchase_item', { id: 'totem', gems: SHOP.totemGems }));
+    this.on('[data-a=chest]', () => {
+      const res = openFreeChest(s, this.app.now(), new Rng((Math.random() * 1e9) | 0));
+      if (!res) return sfx.error();
+      track('chest_open', { source: 'free', rarity: res.rarity });
+      this.app.persist();
+      this.chestModal(res.rarity, res.reward);
+    });
+    this.on('[data-a=prestige]', () => {
+      if (!this.confirmPrestige) {
+        this.confirmPrestige = true;
+        sfx.click();
+        this.shop();
+        return;
+      }
+      this.confirmPrestige = false;
+      const gained = doPrestige(s);
+      if (gained > 0) {
+        sfx.tierUp();
+        vibrate('heavy');
+        track('prestige', { shards: gained, total: s.shards });
+        this.app.persist();
+      }
+      this.shop();
+    });
+  }
+
+  // ───────────────────────── settings ─────────────────────────
+
+  private settings(): void {
+    const st = this.s.settings;
+    const onOff = (v: boolean) => (v ? t('on') : t('off'));
+    const langLabel = st.lang === 'auto' ? t('auto') : st.lang.toUpperCase();
+    this.set(
+      `${this.header(t('settings'))}
+       <div class="panel" style="margin-top:14px">
+         <div class="settings-row"><span>${icon('sound', 28)}${t('sound')}</span><button class="btn sm ${st.sound ? '' : 'ghost'}" data-a="sound">${onOff(st.sound)}</button></div>
+         <div class="settings-row"><span>${icon('vibrate', 28)}${t('vibration')}</span><button class="btn sm ${st.vibration ? '' : 'ghost'}" data-a="vib">${onOff(st.vibration)}</button></div>
+         <div class="settings-row"><span>${icon('shake', 28)}${t('shakeOpt')}</span><button class="btn sm ${st.shake ? '' : 'ghost'}" data-a="shake">${onOff(st.shake)}</button></div>
+         <div class="settings-row"><span>${icon('sparkle', 28)}${t('particlesOpt')}</span><button class="btn sm blue" data-a="parts">${st.particles === 'high' ? t('high') : t('low')}</button></div>
+         <div class="settings-row"><span>${icon('globe', 28)}${t('language')}</span><button class="btn sm blue" data-a="lang">${langLabel}</button></div>
+       </div>
+       <p class="sub center" style="margin-top:18px">${t('level')} ${this.s.level} · ${t('blocks')}: ${fmt(this.s.blocksBroken)} · ${t('best')}: ${this.s.bestDepth} ${t('m')}</p>
+       <p class="sub center">Falling Pickaxe · ${t('version')} 0.2.0</p>`,
+      'solid',
+    );
+    this.bindHeader();
+    const save = () => {
+      this.app.persist();
+      this.app.applyQuality();
+      this.settings();
+    };
+    this.on('[data-a=sound]', () => {
+      st.sound = !st.sound;
+      sfx.enabled = st.sound;
+      sfx.click();
+      save();
+    });
+    this.on('[data-a=vib]', () => {
+      st.vibration = !st.vibration;
+      setVibration(st.vibration);
+      vibrate('medium');
+      save();
+    });
+    this.on('[data-a=shake]', () => {
+      st.shake = !st.shake;
+      sfx.click();
+      save();
+    });
+    this.on('[data-a=parts]', () => {
+      st.particles = st.particles === 'high' ? 'low' : 'high';
+      sfx.click();
+      save();
+    });
+    this.on('[data-a=lang]', () => {
+      st.lang = st.lang === 'auto' ? 'ru' : st.lang === 'ru' ? 'en' : 'auto';
+      setLang(st.lang);
+      sfx.click();
+      save();
+      this.nav(true);
+    });
+  }
+
+  // ───────────────────────── in-run overlays ─────────────────────────
+
+  pause(): void {
+    this.set(
+      `<div class="results">
+        <h2 class="center">${t('pause')}</h2>
+        <button class="btn lg wide" data-a="resume">${icon('play', 30)}<span>${t('resume')}</span></button>
+        <button class="btn red wide" data-a="quit">${t('quit')}</button>
+      </div>`,
+      'over',
+    );
+    this.on('[data-a=resume]', () => {
+      sfx.click();
+      this.app.resume();
+    });
+    this.on('[data-a=quit]', () => {
+      sfx.click();
+      this.app.quitRun();
+    });
+  }
+
+  reviveOffer(free: boolean): void {
+    let left = 5;
+    const host = openModal(`<div class="modal panel">
+      <div class="ribbon" style="--rt:#8af27a;--rb:#2fbf3a">${t('reviveTitle')}</div>
+      <div class="ring" id="ring"><div id="ringN">5</div></div>
+      <p class="sub">${t('reviveDesc')}</p>
+      <div class="modal-actions">
+        <button class="btn lg wide pulse" data-a="yes">${free ? t('reviveFree') : `${icon('ad', 30)}<span>${t('reviveAd')}</span>`}</button>
+        <button class="link" data-a="no">${t('noThanks')}</button>
+      </div></div>`);
+    const timer = setInterval(() => {
+      left -= 0.1;
+      const ring = document.getElementById('ring');
+      if (!ring) return clearInterval(timer);
+      ring.style.setProperty('--p', `${Math.max(0, (left / 5) * 100)}%`);
+      document.getElementById('ringN')!.textContent = String(Math.max(0, Math.ceil(left)));
+      if (left <= 0) {
+        clearInterval(timer);
+        this.app.declineRevive();
+      }
+    }, 100);
+    this.on(
+      '[data-a=yes]',
+      () => {
+        clearInterval(timer);
+        void this.app.acceptRevive(free);
+      },
+      host,
+    );
+    this.on(
+      '[data-a=no]',
+      () => {
+        clearInterval(timer);
+        this.app.declineRevive();
+      },
+      host,
+    );
+  }
+
+  results(adUsed: boolean): void {
+    const r = this.app.result!;
+    const rep = this.app.report!;
+    const s = this.s;
+    const mult = adUsed ? 2 : 1;
+    const affordable = UPGRADES.filter((u) => canBuyUpgrade(s, u.id)).length;
+    let near = '';
+    if (!r.newRecord && rep.prevBest - r.depth > 0 && rep.prevBest - r.depth <= 15) near = t('nearRecord', { n: rep.prevBest - r.depth });
+    else {
+      const g = nextGoal(s);
+      if (g && g.biome > 0 && g.depth - r.depth <= 25 && g.depth > r.depth) near = t('nearGoal', { n: g.depth - r.depth, biome: t(`biome.${BIOMES[g.biome].key}`) });
+    }
+    const newBlocks = rep.newBlocks.length
+      ? `<div class="panel"><div class="sub" style="margin-bottom:6px">${t('newBlocks')} · +${rep.newBlockGems} ${icon('gem', 18)}</div>
+         <div style="display:flex;gap:6px;flex-wrap:wrap">${rep.newBlocks
+           .map((k) => `<img src="${this.app.blockUrl(BLOCKS.find((b) => b?.key === k)!.id)}" style="width:36px;height:36px;border:2px solid var(--ink);border-radius:6px;image-rendering:pixelated">`)
+           .join('')}</div></div>`
+      : '';
+    this.set(
+      `<div class="results">
+        <h2 class="center">${r.core ? t('resultsCore') : t('results')}</h2>
+        <div class="big-depth">${r.depth} ${t('m')}</div>
+        ${r.newRecord ? `<div class="record-badge">${t('newRecord')}</div>` : ''}
+        ${near ? `<div class="near ol">${near}</div>` : ''}
+        <div class="panel rows">
+          <div><span>${t('oreCoins')}</span><span class="v">${icon('coin', 22)}${fmt(r.oreCoins * mult)}</span></div>
+          <div><span>${t('depthCoins')}</span><span class="v">${icon('coin', 22)}${fmt(r.depthCoins * mult)}</span></div>
+          ${r.bonusCoins ? `<div><span>${t('bonusCoins')}</span><span class="v">${icon('coin', 22)}${fmt(r.bonusCoins * mult)}</span></div>` : ''}
+          ${r.gems ? `<div><span>${t('gemsFound')}</span><span class="v">${icon('gem', 22)}${r.gems}</span></div>` : ''}
+          <div><span>${t('blocks')} · ${t('bestCombo')}</span><span class="v">${r.blocks} · ${r.bestCombo}</span></div>
+          <div class="tot"><span>${t('total')}</span><span class="v">${icon('coin', 30)}${fmt(r.totalCoins * mult)}</span></div>
+          <div class="xpline">${icon('star', 26)}<span>${t('lvl')} ${s.level}</span>${bar(s.xp / xpForLevel(s.level), 'purple', `+${rep.xp} ${t('xp')}`)}</div>
+        </div>
+        ${newBlocks}
+        ${rep.questsDone.length ? `<div class="panel">${rep.questsDone.map((q) => `<div class="qdone">${icon('check', 22)}${t('questDoneToast')} · ${t(`q.${q.type}`, { n: fmt(q.target) })}</div>`).join('')}</div>` : ''}
+        ${!adUsed && r.totalCoins > 0 ? `<button class="btn gold wide" data-a="x2">${icon('ad', 30)}<span>${t('x2')}</span></button>` : ''}
+        <div class="row2">
+          ${
+            affordable > 0
+              ? `<button class="btn blue ${s.runs <= 3 ? 'pulse' : ''}" data-a="upgrade">${icon('hammer', 26)}<span>${t('upgrades')}</span><span class="badge">${affordable}</span></button>`
+              : `<button class="btn ghost" data-a="menu">${icon('home', 26)}<span>${t('menu')}</span></button>`
+          }
+          <button class="btn" data-a="again">${icon('play', 24)}<span>${t('playAgain')}</span></button>
+        </div>
+      </div>`,
+      'over',
+    );
+    if (rep.questsDone.length) sfx.chest();
+    this.on('[data-a=x2]', async (el) => {
+      (el as HTMLButtonElement).disabled = true;
+      if (await this.app.doubleCoins()) {
+        sfx.chest();
+        this.results(true);
+      }
+    });
+    const toMenu = (screen: ScreenId) => {
+      sfx.click();
+      this.show(screen);
+      this.autoPopups();
+    };
+    this.on('[data-a=upgrade]', () => toMenu('upgrades'));
+    this.on('[data-a=menu]', () => toMenu('home'));
+    this.on('[data-a=again]', () => {
+      sfx.click();
+      if (this.app.report?.levelsReached.length) return toMenu('home');
+      this.app.startRun();
+    });
+  }
+
+  // ───────────────────────── modals ─────────────────────────
+
+  private rewardModal(title: string, reward: Reward, ic: string): void {
+    sfx.chest();
+    vibrate('medium');
+    const host = openModal(`<div class="modal panel">
+      <div class="ribbon">${title}</div>
+      <div style="margin-top:6px">${icon(ic, 64)}</div>
+      ${rewardTiles(reward, { totem: t('totem'), dynamite: t('dynamite') })}
+      <button class="btn wide" data-a="ok">${t('claim')}</button></div>`);
+    this.on(
+      '[data-a=ok]',
+      () => {
+        sfx.buy();
+        this.closeAndNext();
+        this.bumpWallet();
+      },
+      host,
+    );
+  }
+
+  private chestModal(rarity: ChestRarity, reward: Reward): void {
+    const host = openModal(`<div class="modal panel rarity-${rarity}">
+      <div class="ribbon" style="--rt:var(--rc);--rb:var(--rc)">${t(`rarity.${rarity}`)}</div>
+      <div class="chest-stage shake" id="stage"><div class="rays"></div><div class="big">${icon('chest', 120)}</div></div>
+      <div id="chestBody"><p class="ol" style="font-size:18px;font-weight:900">${t('tapToOpen')}</p></div></div>`);
+    sfx.click();
+    const stage = host.querySelector<HTMLElement>('#stage')!;
+    let opened = false;
+    stage.addEventListener('click', () => {
+      if (opened) return;
+      opened = true;
+      stage.classList.remove('shake');
+      stage.classList.add('burst');
+      sfx.tierUp();
+      vibrate('heavy');
+      host.querySelector('#chestBody')!.innerHTML = `<div class="rarity-name">${t(`rarity.${rarity}`)}</div>
+        ${rewardTiles(reward, { totem: t('totem'), dynamite: t('dynamite') })}
+        <button class="btn wide" data-a="ok">${t('claim')}</button>`;
+      this.on(
+        '[data-a=ok]',
+        () => {
+          sfx.buy();
+          this.closeAndNext();
+          this.bumpWallet();
+        },
+        host,
+      );
+    });
+  }
+
+  private daily(): void {
+    const s = this.s;
+    const now = this.app.now();
+    const st = dailyStatus(s, now);
+    const scale = rewardScale(s);
+    const cells = DAILY.map((d, i) => {
+      const got = st.canClaim ? i < st.index : i <= st.index;
+      const today = st.canClaim && i === st.index;
+      const ic = d.chest ? 'chest' : d.gems ? 'gem' : d.dynamite ? 'bomb' : d.totems ? 'totem' : 'coin';
+      const amt = d.chest ? t(`rarity.${d.chest}`).split(' ')[0] : d.coins ? fmt(d.coins * scale) : `+${d.gems ?? d.dynamite ?? d.totems}`;
+      return `<div class="dayc ${i === 6 ? 'big' : ''} ${got ? 'got' : ''} ${today ? 'today' : ''}">
+        <span>${t('day', { n: i + 1 })}</span>${icon(ic, i === 6 ? 48 : 34)}<span class="amt">${amt}</span></div>`;
+    }).join('');
+    const host = openModal(`<div class="modal panel">
+      <div class="ribbon">${t('dailyTitle')}</div>
+      <button class="icon-btn close" data-a="close">${icon('close', 22)}</button>
+      <p class="sub" style="margin:6px 30px 0">${t('dailyDesc')}</p>
+      <div class="days">${cells}</div>
+      ${st.canClaim ? `<button class="btn lg wide pulse" data-a="claim">${t('claim')}</button>` : `<button class="btn off wide" disabled>${t('comeBack')}</button>`}
+    </div>`);
+    this.on('[data-a=close]', () => this.closeAndNext(), host);
+    this.on(
+      '[data-a=claim]',
+      () => {
+        const res = claimDaily(s, this.app.now(), new Rng((Math.random() * 1e9) | 0));
+        if (!res) return;
+        track('daily_claim', { day: res.index + 1 });
+        this.app.persist();
+        if (DAILY[res.index].chest) this.chestModal(DAILY[res.index].chest!, res.reward);
+        else this.rewardModal(t('day', { n: res.index + 1 }), res.reward, 'gift');
+      },
+      host,
+    );
+  }
+
+  private levelUpModal(level: number): void {
+    const s = this.s;
+    const unlockedNow = (Object.keys(FEATURE_LEVEL) as Feature[]).filter((f) => FEATURE_LEVEL[f] === level);
+    // Reward was already granted in addXp; show it.
+    const reward = levelReward(s, level);
+    sfx.fanfare();
+    vibrate('heavy');
+    const host = openModal(`<div class="modal panel">
+      <div class="ribbon" style="--rt:#d2a8ff;--rb:#8a4dff">${t('levelUp')}</div>
+      <div class="lvl" style="justify-content:center;margin-top:8px"><div class="star" style="width:96px;height:96px">${icon('star', 96)}<b style="font-size:34px">${level}</b></div></div>
+      ${rewardTiles(reward, { totem: t('totem'), dynamite: t('dynamite') })}
+      ${unlockedNow.map((f) => `<p class="ol" style="font-size:17px;font-weight:900;margin:6px 0">${icon('lock', 20)} ${t('unlockedNow', { what: t(`feat_${f}`) })}</p>`).join('')}
+      <button class="btn wide" data-a="ok">${t('claim')}</button></div>`);
+    this.on(
+      '[data-a=ok]',
+      () => {
+        sfx.buy();
+        this.closeAndNext();
+        this.nav(true);
+      },
+      host,
+    );
+  }
+}

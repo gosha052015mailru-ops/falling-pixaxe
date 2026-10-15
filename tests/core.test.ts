@@ -132,8 +132,8 @@ describe('run', () => {
     run.step(1 / 60);
     const r = run.result();
     expect(r.newMilestones).toContain(1);
-    applyResult(save, r);
+    const rep = applyResult(save, r);
     expect(save.milestones).toContain(1);
-    expect(save.gems).toBe(r.gems);
+    expect(save.gems).toBe(r.gems + rep.newBlockGems + rep.levelsReached.reduce((g, l) => g + 2 + Math.floor(l / 5), 0));
   });
 });

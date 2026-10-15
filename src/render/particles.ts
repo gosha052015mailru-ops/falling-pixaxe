@@ -38,8 +38,11 @@ export class Particles {
   parts: Particle[] = [];
   texts: FloatText[] = [];
   rings: Ring[] = [];
+  /** Particle count multiplier (settings: high = 1, low = 0.35). */
+  density = 1;
 
   burst(x: number, y: number, colors: string[], n: number, speed = 6, size = 0.14, gravity = 25, glow = false): void {
+    n = Math.max(1, Math.round(n * this.density));
     for (let i = 0; i < n; i++) {
       if (this.parts.length >= MAX_PARTICLES) this.parts.shift();
       const a = Math.random() * Math.PI * 2;

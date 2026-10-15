@@ -26,7 +26,7 @@ export function vibrate(strength: 'light' | 'medium' | 'heavy'): void {
 export async function showRewardedAd(label: string): Promise<boolean> {
   const el = document.createElement('div');
   el.className = 'ad-overlay';
-  el.innerHTML = `<div class="ad-box"><div class="ad-tag">AD</div><div>${label}</div><div class="ad-bar"><i></i></div></div>`;
+  el.innerHTML = `<div class="ad-box panel"><div class="ribbon">AD</div><div style="margin-top:10px">${label}</div><div class="ad-bar"><i></i></div></div>`;
   document.body.appendChild(el);
   await new Promise((r) => setTimeout(r, 1500));
   el.remove();

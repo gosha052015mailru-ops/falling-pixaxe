@@ -9,6 +9,7 @@ import { buildTextures, shade, type Textures } from './textures';
 const WALL_VIS = 0.5;
 const VIEW_W = WORLD_W + WALL_VIS * 2;
 const PICK_SIZE = 1.25;
+const RAINBOW = ['#ff5f7e', '#ffd23f', '#5ee06f', '#6ff3f0', '#c77dff'];
 
 export class Renderer {
   readonly ctx: CanvasRenderingContext2D;
@@ -22,6 +23,9 @@ export class Renderer {
   private flashColor = '#fff';
   private trail: { x: number; y: number }[] = [];
   private time = 0;
+  /** Settings / adaptive quality. */
+  maxDpr = 3;
+  shakeEnabled = true;
 
   constructor(readonly canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
@@ -30,7 +34,7 @@ export class Renderer {
   }
 
   resize(): void {
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
     const w = this.canvas.clientWidth || window.innerWidth;
     const h = this.canvas.clientHeight || window.innerHeight;
     this.canvas.width = Math.round(w * dpr);
@@ -48,6 +52,7 @@ export class Renderer {
   }
 
   shake(amount: number): void {
+    if (!this.shakeEnabled) return;
     this.shakeAmp = Math.min(0.6, Math.max(this.shakeAmp, amount));
   }
 
@@ -138,6 +143,15 @@ export class Renderer {
       case 'core':
         this.doFlash('#ffffff', 1);
         fx.burst(this.lastPickX, this.lastPickY, ['#fff2a8', '#ff7ad9', '#6ff3f0'], 120, 14, 0.2, 2, true);
+        break;
+      case 'fever':
+        this.doFlash('#ffffff', 0.4);
+        fx.ring(this.lastPickX, this.lastPickY, 2.5, '#ff7ad9');
+        fx.burst(this.lastPickX, this.lastPickY, RAINBOW, 40, 9, 0.14, 4, true);
+        break;
+      case 'revive':
+        this.doFlash('#5dff7a', 0.8);
+        fx.burst(this.lastPickX, this.lastPickY, ['#5dff7a', '#fff', '#ffe066'], 60, 10, 0.15, 3, true);
         break;
       case 'nudge':
         fx.burst(this.lastPickX - e.dir * 0.5, this.lastPickY, ['rgba(255,255,255,0.8)'], 5, 3, 0.1, 0);
@@ -243,6 +257,15 @@ export class Renderer {
         this.drawPick(pick, toX(t.x), toY(t.y), run.angle - (this.trail.length - i) * 0.05, s);
       }
       ctx.globalAlpha = 1;
+      if (run.fever) {
+        const hue = (this.time * 360) % 360;
+        const gr = ctx.createRadialGradient(toX(run.x), toY(run.y), 0, toX(run.x), toY(run.y), s * 1.4);
+        gr.addColorStop(0, `hsla(${hue},100%,70%,0.75)`);
+        gr.addColorStop(1, `hsla(${hue},100%,60%,0)`);
+        ctx.fillStyle = gr;
+        ctx.fillRect(toX(run.x) - s * 1.5, toY(run.y) - s * 1.5, s * 3, s * 3);
+        if (Math.random() < 0.6) this.fx.burst(run.x, run.y, RAINBOW, 1, 2, 0.12, 0, true);
+      }
       this.drawPick(pick, toX(run.x), toY(run.y), run.angle, s);
     }
 
@@ -285,9 +308,10 @@ export class Renderer {
       const a = Math.min(1, (t.life / t.max) * 2);
       ctx.globalAlpha = a;
       const size = Math.round(t.size * s);
-      ctx.font = `${size}px "Tiny5", monospace`;
-      ctx.lineWidth = Math.max(2, size * 0.25);
-      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.font = `900 ${size}px Rubik, sans-serif`;
+      ctx.lineWidth = Math.max(3, size * 0.32);
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = '#170f24';
       ctx.strokeText(t.text, toX(t.x), toY(t.y));
       ctx.fillStyle = t.color;
       ctx.fillText(t.text, toX(t.x), toY(t.y));

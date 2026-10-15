@@ -1,75 +1,94 @@
 import { App as CapApp } from '@capacitor/app';
+import { track } from '../analytics';
 import { sfx } from '../audio/sfx';
 import { blockDef } from '../game/blocks';
 import { Bot } from '../game/bot';
-import { BIOMES, MAX_TIER, PRESTIGE, SHOP, TIERS, UPGRADES, type UpgradeId } from '../game/config';
-import {
-  addCoins,
-  buyDynamite,
-  buyForge,
-  buyTotem,
-  buyUpgrade,
-  canPrestige,
-  deriveStats,
-  doPrestige,
-  dynamiteCost,
-  forgeCost,
-  prestigeShards,
-  upgradeCost,
-  upgradeDef,
-} from '../game/economy';
-import { applyResult, unlockedCheckpoints } from '../game/progress';
+import { BIOMES, TIERS } from '../game/config';
+import { addCoins, deriveStats } from '../game/economy';
+import { trackQuests, unlocked } from '../game/meta';
+import { applyResult, type ProgressReport } from '../game/progress';
 import { Run, type GameEvent, type RunResult } from '../game/run';
-import { loadSave, writeSave, type SaveData } from '../game/save';
+import { clockNow, loadSave, writeSave, type SaveData } from '../game/save';
 import { isNative, setVibration, showRewardedAd, vibrate } from '../platform';
 import { Renderer } from '../render/renderer';
 import { makePickaxe } from '../render/textures';
+import { $, closeModal, modalOpen, toast } from './dom';
 import { fmt } from './format';
 import { setLang, t } from './i18n';
+import { icon } from './icons';
+import { Screens, type ScreenId } from './screens';
 
-type Mode = 'menu' | 'play' | 'paused' | 'dying' | 'results' | 'shop' | 'settings';
-type ShopTab = 'upgrades' | 'forge' | 'items' | 'prestige';
+type Mode = 'menu' | 'play' | 'paused' | 'dying' | 'revive' | 'results';
 
-const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const FIXED_DT = 1 / 120;
+const MAX_STEPS = 8;
 
 export class App {
-  private save: SaveData = loadSave();
-  private renderer: Renderer;
-  private run!: Run;
-  private bot: Bot | null = null;
-  private mode: Mode = 'menu';
+  save: SaveData = loadSave();
+  renderer: Renderer;
+  run!: Run;
+  bot: Bot | null = null;
+  mode: Mode = 'menu';
+  screen: ScreenId = 'home';
+  result: RunResult | null = null;
+  report: ProgressReport | null = null;
+  readonly ui: Screens;
+
   private last = 0;
+  private acc = 0;
   private dyingTimer = 0;
-  private result: RunResult | null = null;
-  private shopTab: ShopTab = 'upgrades';
   private pickImg = new Map<number, string>();
+  private blockImg = new Map<number, string>();
   private banners: { html: string; color: string }[] = [];
   private bannerBusy = false;
-  private hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, buffs: '' };
-  private prestigeArmed = false;
-  private returnTo: Mode = 'menu';
-
-  private screen = $('screen');
-  private hudEl = $('hud');
+  private hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, fever: false, buffs: '' };
+  private frameTimes: number[] = [];
+  private coachState: 'none' | 'tap' | 'bomb' = 'none';
+  private runStartedAt = 0;
+  private tick = 0;
 
   constructor() {
-    setLang(this.save.settings.lang);
-    sfx.enabled = this.save.settings.sound;
-    setVibration(this.save.settings.vibration);
+    const st = this.save.settings;
+    setLang(st.lang);
+    sfx.enabled = st.sound;
+    setVibration(st.vibration);
     this.renderer = new Renderer($<HTMLCanvasElement>('canvas'));
-    this.startDemo();
+    this.applyQuality();
+    this.ui = new Screens(this);
+    this.staticIcons();
     this.bindInput();
-    this.showMenu();
+    track('app_open', { runs: this.save.runs, level: this.save.level });
+
+    if (!this.save.tutorialDone) {
+      // First launch goes straight into the scripted run: the fastest path to fun.
+      track('tutorial_start');
+      this.startRun();
+    } else {
+      this.startDemo();
+      this.ui.show('home');
+      this.ui.autoPopups();
+    }
     requestAnimationFrame((ts) => this.loop(ts));
   }
 
   // ───────────────────────── helpers ─────────────────────────
 
-  private persist(): void {
+  now(): number {
+    return clockNow(this.save);
+  }
+
+  persist(): void {
+    this.now();
     writeSave(this.save);
   }
 
-  private pickUrl(tier: number): string {
+  applyQuality(): void {
+    const st = this.save.settings;
+    this.renderer.shakeEnabled = st.shake;
+    this.renderer.fx.density = st.particles === 'low' ? 0.35 : 1;
+  }
+
+  pickUrl(tier: number): string {
     let u = this.pickImg.get(tier);
     if (!u) {
       u = makePickaxe(tier, 8).toDataURL();
@@ -78,34 +97,33 @@ export class App {
     return u;
   }
 
-  private tierName(tier: number): string {
+  blockUrl(id: number): string {
+    let u = this.blockImg.get(id);
+    if (!u) {
+      const src = this.renderer.tex.blocks[id];
+      const c = document.createElement('canvas');
+      c.width = c.height = 48;
+      const ctx = c.getContext('2d')!;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(src, 0, 0, 48, 48);
+      u = c.toDataURL();
+      this.blockImg.set(id, u);
+    }
+    return u;
+  }
+
+  tierName(tier: number): string {
     return t(`tier.${TIERS[tier].key}`);
   }
 
-  private wallet(): string {
-    return `<div class="wallet"><span class="pill gold">🪙 ${fmt(this.save.coins)}</span><span class="pill pink">💎 ${fmt(this.save.gems)}</span>${
-      this.save.shards ? `<span class="pill">✦ ${this.save.shards}</span>` : ''
-    }</div>`;
-  }
-
-  private setScreen(html: string, cls: 'dim' | 'solid' = 'dim'): void {
-    this.screen.className = `screen ${cls}`;
-    this.screen.innerHTML = html;
-  }
-
-  private on(sel: string, fn: (el: HTMLElement) => void): void {
-    this.screen.querySelectorAll<HTMLElement>(sel).forEach((el) =>
-      el.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        sfx.unlock();
-        fn(el);
-      }),
-    );
+  private staticIcons(): void {
+    $('pauseBtn').innerHTML = icon('pause', 24);
+    $('bombIcon').innerHTML = icon('bomb', 46);
   }
 
   // ───────────────────────── runs ─────────────────────────
 
-  private startDemo(): void {
+  startDemo(): void {
     const stats = deriveStats(this.save);
     stats.dynamite = 3;
     stats.maxDurBase = Math.max(stats.maxDurBase, 120);
@@ -115,81 +133,169 @@ export class App {
     this.renderer.reset(this.run);
   }
 
-  private startRun(): void {
+  startRun(): void {
     sfx.unlock();
-    sfx.click();
+    const tutorial = !this.save.tutorialDone;
     const stats = deriveStats(this.save);
-    this.run = new Run({ seed: (Math.random() * 1e9) | 0, stats, bestDepth: this.save.bestDepth, milestones: this.save.milestones });
+    this.run = new Run({ seed: (Math.random() * 1e9) | 0, stats, bestDepth: this.save.bestDepth, milestones: this.save.milestones, tutorial });
     this.bot = null;
     this.renderer.reset(this.run);
     this.mode = 'play';
-    this.setScreen('');
-    this.screen.className = 'screen';
-    this.hudEl.classList.remove('hidden');
-    this.hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, buffs: '' };
+    this.acc = 0;
+    this.runStartedAt = this.now();
+    this.ui.clear();
+    this.ui.nav(false);
+    $('hud').classList.remove('hidden');
+    this.hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, fever: false, buffs: '' };
     this.banners = [];
-    if (this.save.runs < 2) this.showHint();
+    this.setCoach(tutorial ? 'tap' : 'none');
+    track('run_start', { n: this.save.runs + 1, start: stats.startDepth, tier: stats.startTier, tutorial });
   }
 
-  private showHint(): void {
-    const el = $('hint');
-    el.innerHTML = `${t('hintTap')}<br>${t('hintBomb')}`;
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 4500);
+  private setCoach(state: 'none' | 'tap' | 'bomb'): void {
+    this.coachState = state;
+    const host = $('coach');
+    $('bombBtn').classList.toggle('pulse', state === 'bomb');
+    if (state === 'tap') {
+      host.innerHTML = `<div class="coach tap">${t('hintTap')}<div class="hands"><span class="hand">${icon('hand', 56)}</span><span class="hand b">${icon('hand', 56)}</span></div></div>`;
+    } else if (state === 'bomb') {
+      host.innerHTML = `<div class="coach bomb-hint">${t('hintBomb')}<br><span class="hand">${icon('hand', 48)}</span></div>`;
+      setTimeout(() => this.coachState === 'bomb' && this.setCoach('none'), 4000);
+    } else host.innerHTML = '';
   }
 
-  private finishRun(): void {
+  /** Called when the pickaxe breaks: offer a second chance once per run. */
+  private onBroken(): void {
+    if (this.run.revives === 0 && !this.run.core && this.run.depth > 3) {
+      this.mode = 'revive';
+      $('hud').classList.add('hidden');
+      this.ui.reviveOffer(this.save.runs === 0);
+      track('ad_offer', { placement: 'revive' });
+    } else {
+      this.mode = 'dying';
+      this.dyingTimer = this.run.core ? 2.5 : 1.1;
+    }
+  }
+
+  async acceptRevive(free: boolean): Promise<void> {
+    closeModal();
+    const ok = free || (await showRewardedAd(t('reviveAd')));
+    if (ok && this.run.revive()) {
+      track(free ? 'revive_free' : 'ad_watched', { placement: 'revive' });
+      this.mode = 'play';
+      $('hud').classList.remove('hidden');
+      this.hud.dur = -1;
+      sfx.tierUp();
+      vibrate('heavy');
+      this.banner(`<div class="t">${t('revived')}</div>`, '#5dff7a');
+    } else this.declineRevive();
+  }
+
+  declineRevive(): void {
+    closeModal();
+    this.mode = 'dying';
+    this.dyingTimer = 0.4;
+  }
+
+  finishRun(): void {
     const r = this.run.result();
     this.result = r;
-    applyResult(this.save, r);
+    const wasTutorial = !this.save.tutorialDone;
+    this.report = applyResult(this.save, r, 1, this.now());
     this.persist();
-    this.hudEl.classList.add('hidden');
-    this.showResults(false);
+    $('hud').classList.add('hidden');
+    this.setCoach('none');
+    this.mode = 'results';
+    track('run_end', {
+      n: this.save.runs,
+      depth: r.depth,
+      coins: r.totalCoins,
+      time: Math.round(r.time),
+      tier: r.tier,
+      record: r.newRecord,
+      revived: this.run.revives > 0,
+    });
+    if (wasTutorial) track('tutorial_complete', { depth: r.depth });
+    for (const l of this.report.levelsReached) track('level_up', { level: l });
+    this.ui.results(false);
+  }
+
+  async doubleCoins(): Promise<boolean> {
+    const r = this.result;
+    if (!r) return false;
+    track('ad_offer', { placement: 'x2' });
+    if (!(await showRewardedAd(t('x2')))) return false;
+    addCoins(this.save, r.totalCoins);
+    trackQuests(this.save, { coins: r.totalCoins }, this.now());
+    this.persist();
+    track('ad_watched', { placement: 'x2' });
+    return true;
   }
 
   // ───────────────────────── loop ─────────────────────────
 
   private loop(ts: number): void {
-    const dt = Math.min(0.05, (ts - this.last) / 1000 || 0);
+    const frame = Math.min(0.1, (ts - this.last) / 1000 || 0);
     this.last = ts;
-    const run = this.run;
+    try {
+      this.frame(frame);
+    } catch (err) {
+      // Keep the game alive; report and continue on the next frame.
+      track('error', { msg: String(err).slice(0, 120), src: 'loop', line: 0 });
+      console.error(err);
+    }
+    requestAnimationFrame((n) => this.loop(n));
+  }
 
-    if (this.mode === 'play' || this.mode === 'dying' || this.isDemo()) {
-      run.step(dt);
-      const events = run.drainEvents();
+  private frame(dt: number): void {
+    const run = this.run;
+    const simulate = this.mode === 'play' || this.mode === 'dying' || (this.mode === 'menu' && this.bot !== null);
+
+    if (simulate) {
+      // Fixed timestep: identical physics on 60/90/120 Hz screens.
+      this.acc = Math.min(this.acc + dt, FIXED_DT * MAX_STEPS);
       let broke = false;
-      for (const e of events) {
-        this.renderer.onEvent(e);
-        if (e.t === 'break') broke = true;
-        if (!this.isDemo()) this.react(e);
+      while (this.acc >= FIXED_DT) {
+        this.acc -= FIXED_DT;
+        run.step(FIXED_DT);
+        for (const e of run.drainEvents()) {
+          this.renderer.onEvent(e);
+          if (e.t === 'break') broke = true;
+          if (!this.bot) this.react(e);
+        }
       }
       if (this.bot) {
         this.bot.update(run, dt, broke);
         if (run.over) this.startDemo();
       }
     }
-    if (this.mode === 'play' && run.over) {
-      this.mode = 'dying';
-      this.dyingTimer = run.core ? 2.5 : 1.3;
-    }
+    if (this.mode === 'play' && run.over) this.onBroken();
     if (this.mode === 'dying') {
       this.dyingTimer -= dt;
-      if (this.dyingTimer <= 0) {
-        this.mode = 'results';
-        this.finishRun();
-      }
+      if (this.dyingTimer <= 0) this.finishRun();
     }
-    if (this.mode !== 'paused') this.renderer.update(run, dt);
-    this.renderer.draw(run);
+    if (this.mode !== 'paused' && this.mode !== 'revive') this.renderer.update(this.run, dt);
+    this.renderer.draw(this.run);
     if (this.mode === 'play' || this.mode === 'dying') this.updateHud();
-    requestAnimationFrame((n) => this.loop(n));
+    if (this.mode === 'menu' && ++this.tick % 30 === 0) this.ui.refreshTimers();
+    this.adaptQuality(dt);
   }
 
-  private isDemo(): boolean {
-    return this.bot !== null && (this.mode === 'menu' || this.mode === 'shop' || this.mode === 'settings');
+  /** Drop the canvas resolution on slow devices (keeps ≥ ~45 fps). */
+  private adaptQuality(dt: number): void {
+    if (this.mode !== 'play') return;
+    this.frameTimes.push(dt);
+    if (this.frameTimes.length < 120) return;
+    const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
+    this.frameTimes = [];
+    if (avg > 1 / 45 && this.renderer.maxDpr > 1) {
+      this.renderer.maxDpr = this.renderer.maxDpr > 2 ? 2 : this.renderer.maxDpr > 1.5 ? 1.5 : 1;
+      this.renderer.resize();
+      track('quality_drop', { dpr: this.renderer.maxDpr, fps: Math.round(1 / avg) });
+    }
   }
 
-  /** Sounds, haptics and banners for gameplay events. */
+  /** Sounds, haptics, banners and coach marks for gameplay events. */
   private react(e: GameEvent): void {
     switch (e.t) {
       case 'hit':
@@ -217,11 +323,12 @@ export class App {
           `<img src="${this.pickUrl(e.tier)}"><div class="t">${e.maxed ? t('tierMax') : t('tierUp', { tier: this.tierName(e.tier).toUpperCase() })}</div>`,
           TIERS[e.tier].colors.head,
         );
+        if (!this.save.tutorialDone) track('tutorial_tierup', { tier: e.tier });
         break;
       case 'heal':
         sfx.anvil();
         vibrate('medium');
-        this.banner(`<div class="t">🔨 ${t('heal')}</div><div class="s">+${e.amount} ❤</div>`, '#5dff7a');
+        this.banner(`<div class="t">${t('heal')}</div><div class="s">+${e.amount}</div>`, '#5dff7a');
         break;
       case 'chest': {
         sfx.chest();
@@ -232,12 +339,12 @@ export class App {
       }
       case 'furnace':
         sfx.magic();
-        this.banner(`<div class="t">🔥 ${t('furnace')}</div>`, '#ff8c1a');
+        this.banner(`<div class="t">${t('furnace')}</div>`, '#ff8c1a');
         break;
       case 'enchant':
         sfx.magic();
         vibrate('medium');
-        this.banner(`<div class="t">✨ ${t(`ench.${e.id}`)}</div>`, '#c77dff');
+        this.banner(`<div class="t">${t(`ench.${e.id}`)}</div>`, '#c77dff');
         break;
       case 'gem':
         sfx.coin();
@@ -253,14 +360,15 @@ export class App {
         sfx.fanfare();
         vibrate('heavy');
         this.banner(
-          `<div class="t">${t(`biome.${BIOMES[e.biome].key}`)}</div><div class="s">${t('milestoneSub', { coins: fmt(e.coins), gems: e.gems })}</div>`,
+          `<div class="t">${t(`biome.${BIOMES[e.biome].key}`)}</div><div class="s">+${fmt(e.coins)} · +${e.gems}</div>`,
           '#6ff3f0',
         );
+        track('milestone', { biome: e.biome });
         break;
       case 'totem':
         sfx.tierUp();
         vibrate('heavy');
-        this.banner(`<div class="t">🗿 ${t('totemUsed')}</div>`, '#ffe066');
+        this.banner(`<div class="t">${t('totemUsed')}</div>`, '#ffe066');
         break;
       case 'shatter':
         sfx.shatter();
@@ -269,16 +377,31 @@ export class App {
       case 'core':
         sfx.fanfare();
         vibrate('heavy');
-        this.banner(`<div class="t">🌟 ${t('core')}</div>`, '#ff7ad9');
+        this.banner(`<div class="t">${t('core')}</div>`, '#ff7ad9');
         break;
       case 'nudge':
         sfx.nudge();
         vibrate('light');
+        if (this.coachState === 'tap') {
+          this.setCoach('none');
+          track('tutorial_first_tap');
+        }
         break;
       case 'combo':
-        if (e.n % 20 === 0) this.banner(`<div class="t">${t('combo', { n: e.n })}</div>`, '#ff8800');
+        if (e.n % 25 !== 0 && e.n % 10 === 0 && e.n >= 20) this.banner(`<div class="t">${t('combo', { n: e.n })}</div>`, '#ff8800');
+        break;
+      case 'fever':
+        sfx.fanfare();
+        vibrate('heavy');
+        this.banner(`<div class="t">${t('fever')}</div><div class="s">${t('feverSub')}</div>`, '#ff7ad9');
+        break;
+      case 'stuck':
+        if (this.save.runs < 5 && this.run.depth > 8 && this.run.dynamite > 0 && this.coachState === 'none') this.setCoach('bomb');
         break;
       case 'dynamite':
+        if (this.coachState === 'bomb') this.setCoach('none');
+        break;
+      case 'revive':
         break;
     }
   }
@@ -290,7 +413,7 @@ export class App {
     el.classList.add('hurt');
   }
 
-  private banner(html: string, color: string): void {
+  banner(html: string, color: string): void {
     if (this.banners.length >= 3) this.banners.shift();
     this.banners.push({ html, color });
     if (!this.bannerBusy) this.nextBanner();
@@ -316,25 +439,27 @@ export class App {
     if (dur !== h.dur || r.maxDur !== h.max) {
       h.dur = dur;
       h.max = r.maxDur;
-      const frac = dur / r.maxDur;
+      const frac = Math.min(1, dur / r.maxDur);
       const fill = $('durFill');
-      fill.style.width = `${Math.min(100, frac * 100)}%`;
+      fill.style.width = `${frac * 100}%`;
+      $('durGhost').style.width = `${frac * 100}%`;
       fill.className = 'dur-fill' + (frac > 0.6 ? ' high' : frac > 0.3 ? ' mid' : '');
-      $('durText').textContent = `❤ ${dur} / ${r.maxDur}`;
+      $('durText').textContent = `${dur} / ${r.maxDur}`;
+      if (!$('dur').querySelector('.ico')) $('dur').insertAdjacentHTML('afterbegin', icon('heart', 34));
     }
     if (r.depth !== h.depth) {
       h.depth = r.depth;
-      $('depth').textContent = `⛏ ${r.depth} ${t('m')}`;
+      $('depth').innerHTML = `${icon('down', 30)}${r.depth} ${t('m')}`;
     }
     const coins = r.runCoins;
     if (coins !== h.coins) {
       h.coins = coins;
-      $('runCoins').textContent = `🪙 ${fmt(coins)}`;
+      $('runCoins').innerHTML = `${icon('coin', 30)}${fmt(coins)}`;
     }
     if (r.gems !== h.gems) {
       h.gems = r.gems;
       const g = $('runGems');
-      g.textContent = `💎 ${r.gems}`;
+      g.innerHTML = `${icon('gem', 30)}${r.gems}`;
       g.classList.toggle('hidden', r.gems === 0);
     }
     if (r.nudges !== h.nudges) {
@@ -347,21 +472,26 @@ export class App {
       $('bombBtn').classList.toggle('empty', r.dynamite === 0);
     }
     const combo = r.combo >= 5 ? r.combo : 0;
-    if (combo !== h.combo) {
+    if (combo !== h.combo || r.fever !== h.fever) {
       const el = $('combo');
-      el.textContent = combo ? `×${r.comboMult.toFixed(2)}  ·  ${combo} 🔥` : '';
+      el.innerHTML = combo ? `${combo}<small>x${r.comboMult.toFixed(2)}</small>` : '';
       el.classList.toggle('on', combo > 0);
+      el.classList.toggle('fever', r.fever);
       if (combo > h.combo) {
         el.classList.remove('pop');
         void el.offsetWidth;
         el.classList.add('pop');
       }
       h.combo = combo;
+      h.fever = r.fever;
     }
     const buffs: string[] = [];
-    if (r.furnaceTimer > 0) buffs.push(`<span class="buff" style="--c:#ff8c1a">🔥 ×2 ${Math.ceil(r.furnaceTimer)}s</span>`);
-    for (const [k, v] of Object.entries(r.enchants)) if (v > 0) buffs.push(`<span class="buff" style="--c:#c77dff">✨ ${t(`ench.${k}`).split(':')[0]}${v > 1 ? ' ×' + v : ''}</span>`);
-    if (r.totems > 0) buffs.push(`<span class="buff" style="--c:#ffe066">🗿</span>`);
+    if (r.fever) buffs.push(`<span class="buff" style="--c:#c2368f">${icon('sparkle', 20)}${t('fever')} ${Math.ceil(r.feverTimer)}</span>`);
+    if (r.furnaceTimer > 0) buffs.push(`<span class="buff" style="--c:#c25a12">${icon('fire', 20)}x2 ${Math.ceil(r.furnaceTimer)}</span>`);
+    for (const [k, v] of Object.entries(r.enchants)) {
+      if (v > 0) buffs.push(`<span class="buff" style="--c:#6a35c2">${icon('sparkle', 20)}${t(`ench.${k}`).split(':')[0]}${v > 1 ? ' x' + v : ''}</span>`);
+    }
+    if (r.totems > 0) buffs.push(`<span class="buff" style="--c:#8a6a1a">${icon('totem', 20)}</span>`);
     const bh = buffs.join('');
     if (bh !== h.buffs) {
       h.buffs = bh;
@@ -387,7 +517,7 @@ export class App {
     $('pauseBtn').addEventListener('click', () => this.pause());
     window.addEventListener('keydown', (ev) => {
       if (this.mode !== 'play') {
-        if (ev.key === 'Escape' && this.mode === 'paused') this.resume();
+        if (ev.key === 'Escape') this.back();
         return;
       }
       if (ev.key === 'ArrowLeft' || ev.key === 'a') this.run.nudge(-1);
@@ -396,22 +526,25 @@ export class App {
       else if (ev.key === 'Escape' || ev.key === 'p') this.pause();
     });
     window.addEventListener('resize', () => this.renderer.resize());
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        if (this.mode === 'play') this.pause();
-        this.persist();
-      }
-    });
+    const background = () => {
+      if (this.mode === 'play') this.pause();
+      this.persist();
+    };
+    document.addEventListener('visibilitychange', () => document.hidden && background());
     if (isNative) {
       void CapApp.addListener('backButton', () => this.back());
-      void CapApp.addListener('pause', () => {
-        if (this.mode === 'play') this.pause();
-        this.persist();
-      });
+      void CapApp.addListener('pause', background);
+      void CapApp.addListener('resume', () => this.mode === 'menu' && this.ui.show(this.screen));
     }
   }
 
-  private back(): void {
+  /** Android back button / Escape. */
+  back(): void {
+    if (modalOpen()) {
+      if (this.mode === 'revive') this.declineRevive();
+      else closeModal();
+      return;
+    }
     switch (this.mode) {
       case 'play':
         this.pause();
@@ -419,306 +552,54 @@ export class App {
       case 'paused':
         this.resume();
         break;
-      case 'shop':
-      case 'settings':
-        if (this.returnTo === 'paused') this.pause();
-        else this.showMenu();
-        break;
       case 'results':
-        this.showMenu();
+        this.ui.show('home');
         break;
       case 'menu':
-        void CapApp.exitApp();
+        if (this.screen !== 'home') this.ui.show('home');
+        else if (isNative) void CapApp.exitApp();
         break;
     }
   }
 
-  private pause(): void {
-    if (this.mode !== 'play' && this.mode !== 'settings') return;
+  pause(): void {
+    if (this.mode !== 'play') return;
     this.mode = 'paused';
-    this.setScreen(`
-      <div class="results">
-        <h2 class="center">${t('pause')}</h2>
-        <button class="btn big" data-a="resume">${t('resume')}</button>
-        <button class="btn" data-a="settings">⚙ ${t('settings')}</button>
-        <button class="btn red" data-a="quit">${t('quit')}</button>
-      </div>`);
-    this.on('[data-a=resume]', () => this.resume());
-    this.on('[data-a=settings]', () => this.showSettings('paused'));
-    this.on('[data-a=quit]', () => {
-      // quitting ends the run but still pays out what was earned
-      this.mode = 'results';
-      this.finishRun();
-    });
+    this.ui.pause();
   }
 
-  private resume(): void {
+  resume(): void {
     this.mode = 'play';
-    this.setScreen('');
-    this.screen.className = 'screen';
+    this.acc = 0;
+    this.ui.clear();
   }
 
-  // ───────────────────────── screens ─────────────────────────
-
-  private showMenu(): void {
-    if (this.mode === 'results' || this.mode === 'paused' || !this.bot) this.startDemo();
-    this.mode = 'menu';
-    this.hudEl.classList.add('hidden');
-    const s = this.save;
-    const cps = unlockedCheckpoints(s);
-    if (!cps.includes(s.startDepth)) s.startDepth = 0;
-    const lift =
-      cps.length > 1
-        ? `<div class="lift"><div class="label">${t('lift')}</div><div class="chips">${cps
-            .map((d) => `<button class="chip ${d === s.startDepth ? 'on' : ''}" data-d="${d}">${d} ${t('m')}</button>`)
-            .join('')}</div></div>`
-        : '';
-    this.setScreen(`
-      <div class="topbar">${this.wallet()}<button class="icon-btn" data-a="settings">⚙</button></div>
-      <div class="logo"><h1>${t('title')}</h1><p>${t('subtitle')}</p></div>
-      <div class="hero">
-        <img src="${this.pickUrl(s.forgeTier)}" alt="">
-        <div class="name">${this.tierName(s.forgeTier)}</div>
-        <div class="best">🏆 ${t('best')}: <b>${s.bestDepth} ${t('m')}</b></div>
-      </div>
-      <div class="menu-actions">
-        ${lift}
-        <button class="btn big" data-a="play">${t('play')} ▼</button>
-        <div class="grid2">
-          <button class="btn gold" data-a="upgrades">⚒ ${t('upgrades')}</button>
-          <button class="btn purple" data-a="forge">🔥 ${t('forge')}</button>
-          <button class="btn" data-a="items">💥 ${t('items')}</button>
-          <button class="btn" data-a="prestige" ${s.bestDepth >= PRESTIGE.unlockDepth || s.prestiges ? '' : 'disabled'}>✦ ${t('prestige')}</button>
-        </div>
-      </div>`);
-    this.on('[data-a=play]', () => this.startRun());
-    this.on('[data-a=settings]', () => this.showSettings('menu'));
-    this.on('[data-a=upgrades]', () => this.showShop('upgrades'));
-    this.on('[data-a=forge]', () => this.showShop('forge'));
-    this.on('[data-a=items]', () => this.showShop('items'));
-    this.on('[data-a=prestige]', () => this.showShop('prestige'));
-    this.on('[data-d]', (el) => {
-      s.startDepth = Number(el.dataset.d);
-      sfx.click();
-      this.persist();
-      this.showMenu();
-    });
+  quitRun(): void {
+    this.mode = 'dying';
+    this.dyingTimer = 0;
+    this.ui.clear();
+    this.run.over = true;
   }
 
-  private upgradeText(id: UpgradeId, lvl: number): string {
-    const s = this.save;
-    const now = deriveStats(s);
-    const next = deriveStats({ ...s, upgrades: { ...s.upgrades, [id]: lvl + 1 } });
-    const f2 = (n: number) => n.toFixed(2).replace(/\.?0+$/, '');
-    const pair: Record<UpgradeId, [string | number, string | number]> = {
-      durability: [now.maxDurBase, next.maxDurBase],
-      power: [f2(now.powerMult), f2(next.powerMult)],
-      fortune: [f2(now.coinMult), f2(next.coinMult)],
-      luck: [f2(now.luckMult), f2(next.luckMult)],
-      crit: [Math.round(now.critChance * 100), Math.round(next.critChance * 100)],
-      control: [`${now.nudgeCharges} / ${now.nudgeRegen.toFixed(1)}s`, `${next.nudgeCharges} / ${next.nudgeRegen.toFixed(1)}s`],
-      blast: [f2(now.blastRadius), f2(next.blastRadius)],
-      weight: [f2(now.maxFallMult), f2(next.maxFallMult)],
-    };
-    const [a, b] = pair[id];
-    return t(`upd.${id}`, { a, b });
-  }
-
-  private showShop(tab: ShopTab): void {
-    this.mode = 'shop';
-    this.returnTo = 'menu';
-    this.shopTab = tab;
-    this.prestigeArmed = false;
-    this.renderShop();
-  }
-
-  private renderShop(): void {
-    const s = this.save;
-    const tab = this.shopTab;
-    let body = '';
-    if (tab === 'upgrades') {
-      body = `<div class="list">${UPGRADES.map((u) => {
-        const lvl = s.upgrades[u.id];
-        const maxed = lvl >= upgradeDef(u.id).max;
-        const cost = upgradeCost(u.id, lvl);
-        return `<div class="card">
-          <div class="ic">${u.icon}</div>
-          <div class="info"><div class="nm">${t(`up.${u.id}`)}<small>${t('lvl')} ${lvl}</small></div>
-          <div class="ds">${maxed ? t('max') : this.upgradeText(u.id, lvl)}</div></div>
-          <button class="btn gold" data-up="${u.id}" ${maxed || s.coins < cost ? 'disabled' : ''}>${maxed ? t('max') : '🪙 ' + fmt(cost)}</button>
-        </div>`;
-      }).join('')}</div>`;
-    } else if (tab === 'forge') {
-      const cost = forgeCost(s);
-      const cur = s.forgeTier;
-      body = `<div class="panel center">
-        <div class="forge-view"><img src="${this.pickUrl(cur)}">${
-          cur < MAX_TIER ? `<span class="arrow">➜</span><img src="${this.pickUrl(cur + 1)}">` : ''
-        }</div>
-        <div class="nm" style="font-size:22px">${this.tierName(cur)}${cur < MAX_TIER ? ' ➜ ' + this.tierName(cur + 1) : ''}</div>
-        <p class="muted">${t('forgeDesc')}</p>
-        ${
-          cost === null
-            ? `<p>${t('forgeMax')}</p>`
-            : `<button class="btn gold" data-a="forge" ${s.coins < cost ? 'disabled' : ''}>🔥 🪙 ${fmt(cost)}</button>`
-        }
-      </div>
-      <div class="list" style="margin-top:14px">${TIERS.map(
-        (tr, i) => `<div class="card" style="${i > cur ? 'opacity:.5' : ''}"><div class="ic"><img src="${this.pickUrl(i)}"></div>
-          <div class="info"><div class="nm">${this.tierName(i)}</div><div class="ds">⚒ ×${tr.dmg} · ❤ ×${tr.dur}${tr.coinBonus ? ` · 🪙 +${tr.coinBonus * 100}%` : ''}${tr.fireproof ? ' · 🔥🛡' : ''}</div></div></div>`,
-      ).join('')}</div>`;
-    } else if (tab === 'items') {
-      const dc = dynamiteCost(s);
-      body = `<div class="list">
-        <div class="card"><div class="ic">💥</div><div class="info"><div class="nm">${t('dynamite')}<small>${t('owned')}: ${s.dynamite}</small></div><div class="ds">${t('dynamiteDesc')}</div></div>
-          <button class="btn gold" data-a="dyn" ${s.coins < dc ? 'disabled' : ''}>🪙 ${fmt(dc)}</button></div>
-        <div class="card"><div class="ic">🗿</div><div class="info"><div class="nm">${t('totem')}<small>${t('owned')}: ${s.totems}</small></div><div class="ds">${t('totemDesc')}</div></div>
-          <button class="btn purple" data-a="totem" ${s.gems < SHOP.totemGems ? 'disabled' : ''}>💎 ${SHOP.totemGems}</button></div>
-      </div>`;
-    } else {
-      const unlocked = s.bestDepth >= PRESTIGE.unlockDepth || s.prestiges > 0;
-      const n = prestigeShards(s);
-      body = `<div class="panel center">
-        <div style="font-size:54px">✦</div>
-        <div class="nm" style="font-size:22px">${t('shards')}: ${s.shards}</div>
-        <p class="muted">${t('prestigeDesc')}</p>
-        ${
-          !unlocked
-            ? `<p>${t('prestigeLocked', { d: PRESTIGE.unlockDepth })}</p>`
-            : canPrestige(s)
-              ? `<button class="btn purple" data-a="prestige">${this.prestigeArmed ? t('confirmPrestige') : t('prestigeBtn', { n })}</button>`
-              : `<p>${t('prestigeNone')}</p>`
-        }
-      </div>`;
+  goMenu(): void {
+    if (this.mode !== 'menu') {
+      this.mode = 'menu';
+      this.startDemo();
     }
-    const tabs: ShopTab[] = ['upgrades', 'forge', 'items', 'prestige'];
-    this.setScreen(
-      `<div class="topbar"><button class="btn small" data-a="back">◀ ${t('back')}</button>${this.wallet()}</div>
-       <div class="tabs">${tabs.map((k) => `<button class="tab ${k === tab ? 'on' : ''}" data-tab="${k}">${t(k)}</button>`).join('')}</div>
-       ${body}`,
-      'solid',
-    );
-    this.on('[data-a=back]', () => {
-      sfx.click();
-      this.showMenu();
-    });
-    this.on('[data-tab]', (el) => {
-      sfx.click();
-      this.shopTab = el.dataset.tab as ShopTab;
-      this.prestigeArmed = false;
-      this.renderShop();
-    });
-    const buy = (ok: boolean) => {
-      if (ok) {
-        sfx.buy();
-        vibrate('light');
-        this.persist();
-      } else sfx.error();
-      this.renderShop();
-    };
-    this.on('[data-up]', (el) => buy(buyUpgrade(s, el.dataset.up as UpgradeId)));
-    this.on('[data-a=forge]', () => buy(buyForge(s)));
-    this.on('[data-a=dyn]', () => buy(buyDynamite(s)));
-    this.on('[data-a=totem]', () => buy(buyTotem(s)));
-    this.on('[data-a=prestige]', () => {
-      if (!this.prestigeArmed) {
-        this.prestigeArmed = true;
-        sfx.click();
-        this.renderShop();
-        return;
-      }
-      this.prestigeArmed = false;
-      const gained = doPrestige(s);
-      if (gained > 0) {
-        sfx.tierUp();
-        vibrate('heavy');
-        this.persist();
-      }
-      this.renderShop();
-    });
   }
 
-  private showResults(adUsed: boolean): void {
-    const r = this.result!;
-    this.mode = 'results';
-    const tier = this.tierName(r.tier);
-    this.setScreen(`
-      <div class="results">
-        <h2 class="center">${r.core ? t('resultsCore') : t('results')}</h2>
-        <div class="big-depth">${r.depth} ${t('m')}</div>
-        ${r.newRecord ? `<div class="record">🏆 ${t('newRecord')}</div>` : ''}
-        <div class="panel rows">
-          <div><span>${t('oreCoins')}</span><span>🪙 ${fmt(r.oreCoins)}</span></div>
-          <div><span>${t('depthCoins')}</span><span>🪙 ${fmt(r.depthCoins)}</span></div>
-          ${r.bonusCoins ? `<div><span>${t('bonusCoins')}</span><span>🪙 ${fmt(r.bonusCoins)}</span></div>` : ''}
-          ${r.gems ? `<div><span>${t('gemsFound')}</span><span>💎 ${r.gems}</span></div>` : ''}
-          <div><span>${t('blocks')}</span><span>${r.blocks}</span></div>
-          <div><span>${t('bestCombo')}</span><span>${r.bestCombo}</span></div>
-          <div><span>${t('tierReached')}</span><span>${tier}</span></div>
-          <div class="tot"><span>${t('total')}</span><span>🪙 ${fmt(r.totalCoins * (adUsed ? 2 : 1))}</span></div>
-        </div>
-        ${!adUsed && r.totalCoins > 0 ? `<button class="btn gold" data-a="x2">▶ ${t('x2')}</button>` : ''}
-        <button class="btn big" data-a="next">${t('continue')}</button>
-      </div>`);
-    this.on('[data-a=x2]', async (el) => {
-      (el as HTMLButtonElement).disabled = true;
-      if (await showRewardedAd(t('x2'))) {
-        addCoins(this.save, r.totalCoins);
-        this.persist();
-        sfx.chest();
-        this.showResults(true);
-      }
-    });
-    this.on('[data-a=next]', () => {
-      sfx.click();
-      this.showMenu();
-    });
+  isUnlocked(f: Parameters<typeof unlocked>[1]): boolean {
+    return unlocked(this.save, f);
   }
 
-  private showSettings(from: Mode): void {
-    this.returnTo = from === 'paused' ? 'paused' : 'menu';
-    this.mode = 'settings';
-    const st = this.save.settings;
-    const langLabel = st.lang === 'auto' ? t('auto') : st.lang.toUpperCase();
-    this.setScreen(
-      `<div class="topbar"><button class="btn small" data-a="back">◀ ${t('back')}</button></div>
-       <h2 style="margin-top:16px">${t('settings')}</h2>
-       <div class="panel" style="margin-top:14px">
-         <div class="settings-row"><span>🔊 ${t('sound')}</span><button class="btn small" data-a="sound">${st.sound ? t('on') : t('off')}</button></div>
-         <div class="settings-row"><span>📳 ${t('vibration')}</span><button class="btn small" data-a="vib">${st.vibration ? t('on') : t('off')}</button></div>
-         <div class="settings-row" style="border:0"><span>🌐 ${t('language')}</span><button class="btn small" data-a="lang">${langLabel}</button></div>
-       </div>
-       <p class="muted center" style="margin-top:20px">${t('runs')}: ${this.save.runs} · ${t('blocks')}: ${fmt(this.save.blocksBroken)} · ${t('collection')}: ${this.save.discovered.length}</p>
-       <p class="muted center">Falling Pickaxe v0.1</p>`,
-      'solid',
-    );
-    this.on('[data-a=back]', () => {
-      sfx.click();
-      if (this.returnTo === 'paused') {
-        this.mode = 'settings';
-        this.pause();
-      } else this.showMenu();
-    });
-    this.on('[data-a=sound]', () => {
-      st.sound = !st.sound;
-      sfx.enabled = st.sound;
-      sfx.click();
-      this.persist();
-      this.showSettings(this.returnTo);
-    });
-    this.on('[data-a=vib]', () => {
-      st.vibration = !st.vibration;
-      setVibration(st.vibration);
-      vibrate('medium');
-      this.persist();
-      this.showSettings(this.returnTo);
-    });
-    this.on('[data-a=lang]', () => {
-      st.lang = st.lang === 'auto' ? 'ru' : st.lang === 'ru' ? 'en' : 'auto';
-      setLang(st.lang);
-      sfx.click();
-      this.persist();
-      this.showSettings(this.returnTo);
-    });
+  get runTime(): number {
+    return this.now() - this.runStartedAt;
+  }
+
+  notifyQuests(done: { type: string; target: number }[]): void {
+    for (const q of done) {
+      toast(`${icon('scroll', 28)}<span>${t('questDoneToast')}<br><small class="sub">${t(`q.${q.type}`, { n: fmt(q.target) })}</small></span>`);
+      sfx.chest();
+    }
   }
 }

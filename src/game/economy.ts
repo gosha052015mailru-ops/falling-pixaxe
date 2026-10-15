@@ -35,6 +35,7 @@ export function buyUpgrade(save: SaveData, id: UpgradeId): boolean {
   if (!canBuyUpgrade(save, id)) return false;
   save.coins -= upgradeCost(id, save.upgrades[id]);
   save.upgrades[id]++;
+  save.life.upgradesBought++;
   return true;
 }
 
@@ -47,6 +48,7 @@ export function buyForge(save: SaveData): boolean {
   if (cost === null || save.coins < cost) return false;
   save.coins -= cost;
   save.forgeTier++;
+  save.life.upgradesBought++;
   return true;
 }
 

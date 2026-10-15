@@ -55,6 +55,11 @@ export const RUN = {
   dynamiteRadiusPerLvl: 0.25,
   totemHeal: 0.5,
   explosiveEvery: 15,
+  /** Fever: every feverCombo breaks in a row → feverTime seconds of bonus. */
+  feverCombo: 40,
+  feverTime: 4,
+  feverDamage: 1.5,
+  feverCoins: 1.25,
 };
 
 export interface TierDef {
