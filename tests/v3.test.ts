@@ -128,3 +128,39 @@ describe('new player pacing (playtest guards)', () => {
     expect(s.level).toBe(1);
   });
 });
+
+describe('mega upgrades & fast-forward', () => {
+  it('pickaxe size strikes neighbouring blocks with the same hit', () => {
+    const s = newSave();
+    s.pickSize = 2;
+    const run = new Run({ seed: 2, stats: deriveStats(s), bestDepth: 0, milestones: [] });
+    for (let x = 0; x < run.world.width; x++) run.world.set(x, 10, B.DIRT);
+    for (let y = 0; y < 10; y++) for (let x = 0; x < run.world.width; x++) run.world.set(x, y, B.AIR);
+    run.x = 4.5;
+    run.y = 8;
+    run.vx = 0;
+    run.vy = 8;
+    for (let i = 0; i < 120 && run.world.get(4, 10) !== B.AIR; i++) run.step(1 / 120);
+    expect(run.world.get(4, 10)).toBe(B.AIR);
+    expect(run.world.get(3, 10)).toBe(B.AIR);
+    expect(run.world.get(5, 10)).toBe(B.AIR);
+  });
+  it('shaft width widens the world', async () => {
+    const { buyMega, megaCost } = await import('../src/game/economy');
+    const s = newSave();
+    s.coins = 1e9;
+    expect(buyMega(s, 'width')).toBe(true);
+    const run = new Run({ seed: 2, stats: deriveStats(s), bestDepth: 0, milestones: [] });
+    expect(run.world.width).toBe(11);
+    expect(run.world.get(10, 20)).not.toBe(B.BEDROCK);
+    expect(megaCost(s, 'width')).toBeGreaterThan(megaCost(newSave(), 'width')!);
+  });
+  it('fast-forward unlocks at 10 / 30 / 50 seconds', async () => {
+    const { FAST_FORWARD } = await import('../src/game/config');
+    expect(FAST_FORWARD).toEqual([
+      [10, 1.5],
+      [30, 2],
+      [50, 4],
+    ]);
+  });
+});

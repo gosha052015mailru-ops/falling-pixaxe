@@ -154,7 +154,7 @@ export class Run {
   constructor(readonly init: RunInit) {
     this.stats = init.stats;
     this.rng = new Rng(init.seed);
-    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.stats.hpMult);
+    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.stats.hpMult, init.stats.worldWidth);
     this.x = this.world.width / 2;
     this.y = init.stats.startDepth - 3;
     this.vx = this.rng.range(-1.5, 1.5);
@@ -426,6 +426,8 @@ export class Run {
 
     this.spendDurability(def.durCost);
 
+    this.sideSwing(cx, cy, dmg);
+
     if (Number.isFinite(before) && this.world.damage(cx, cy, dmg)) {
       const keep = dmg >= before * 2 ? PHYS.pierceKeep : PHYS.breakKeep;
       this.vx *= keep;
@@ -445,6 +447,26 @@ export class Run {
       this.angVel = this.rng.sign() * this.rng.range(6, 14);
     }
     if (this.durability <= 0) this.die();
+  }
+
+  /** Bigger pickaxe: the same hit also strikes the nearest blocks in this row. */
+  private sideSwing(cx: number, cy: number, dmg: number): void {
+    const n = this.stats.pickSize;
+    if (n <= 0) return;
+    const cells: number[] = [];
+    for (let d = 1; d <= n + 1 && cells.length < n; d++) {
+      // nearer side first, so a size-1 pickaxe hits the neighbour it overlaps most
+      const first = this.x >= cx + 0.5 ? 1 : -1;
+      for (const dx of [first * d, -first * d]) if (cells.length < n) cells.push(cx + dx);
+    }
+    for (const x of cells) {
+      if (this.world.isWall(x)) continue;
+      const id = this.world.get(x, cy);
+      const def = blockDef(id);
+      if (!def.solid || !Number.isFinite(def.hp) || def.special) continue;
+      if (this.world.damage(x, cy, dmg)) this.breakBlock(x, cy, 'pick', false);
+      else this.emit({ t: 'hit', x, y: cy, id, dmg, crit: false, frac: Math.max(0, this.world.hpAt(x, cy) / blockHp(id, cy, this.world.hpMult)), speed: 0 });
+    }
   }
 
   private reflect(nx: number, ny: number, vn: number, e: number): void {

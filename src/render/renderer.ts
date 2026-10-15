@@ -7,7 +7,8 @@ import { Particles } from './particles';
 import { buildTextures, shade, type Textures } from './textures';
 
 const WALL_VIS = 0.5;
-const VIEW_W = WORLD_W + WALL_VIS * 2;
+/** The camera zooms out for a wider shaft, but never shows more than this many columns. */
+const MAX_VIEW_COLS = 13;
 const PICK_SIZE = 1.25;
 const RAINBOW = ['#ff5f7e', '#ffd23f', '#5ee06f', '#6ff3f0', '#c77dff'];
 
@@ -18,11 +19,16 @@ export class Renderer {
   scale = 40;
   viewH = 16;
   camY = -6;
+  /** Left edge of the view in world columns. */
+  camX = -WALL_VIS;
+  private worldW = WORLD_W;
+  private viewW = WORLD_W + WALL_VIS * 2;
   private shakeAmp = 0;
   private flash = 0;
   private flashColor = '#fff';
   private trail: { x: number; y: number }[] = [];
   private time = 0;
+  private lastOhYes = -10;
   /** Settings / adaptive quality. */
   maxDpr = 3;
   shakeEnabled = true;
@@ -39,11 +45,16 @@ export class Renderer {
     const h = this.canvas.clientHeight || window.innerHeight;
     this.canvas.width = Math.round(w * dpr);
     this.canvas.height = Math.round(h * dpr);
-    this.scale = this.canvas.width / VIEW_W;
+    this.scale = this.canvas.width / this.viewW;
     this.viewH = this.canvas.height / this.scale;
   }
 
   reset(run: Run): void {
+    this.worldW = run.world.width;
+    this.pickScale = 1 + 0.22 * run.stats.pickSize;
+    this.viewW = Math.min(MAX_VIEW_COLS, this.worldW + WALL_VIS * 2);
+    this.resize();
+    this.camX = this.targetCamX(run.x);
     this.fx.clear();
     this.trail = [];
     this.camY = run.y - this.viewH * 0.35;
@@ -80,6 +91,10 @@ export class Renderer {
           fx.text(e.x + 0.5, e.y + 0.3, '+' + fmt(e.coins), def.ore ? def.colors[1] : '#ffd23f', def.ore ? 0.55 : 0.42);
         }
         if (def.ore && def.value >= 50) {
+          if (this.time - this.lastOhYes > 3) {
+            this.lastOhYes = this.time;
+            fx.text(e.x + 0.5, e.y - 0.6, 'OH YES!', '#ffffff', 0.6);
+          }
           fx.burst(e.x + 0.5, e.y + 0.5, ['#fff', def.colors[1]], 10, 9, 0.08, 4, true);
           this.shake(0.15);
         } else this.shake(0.05);
@@ -164,8 +179,16 @@ export class Renderer {
   private lastPickX = 4.5;
   private lastPickY = 0;
 
+  /** Follow the pickaxe horizontally when the shaft is wider than the view. */
+  private targetCamX(x: number): number {
+    const min = -WALL_VIS;
+    const max = this.worldW + WALL_VIS - this.viewW;
+    return max <= min ? (this.worldW - this.viewW) / 2 : Math.max(min, Math.min(max, x - this.viewW / 2));
+  }
+
   update(run: Run, dt: number): void {
     this.time += dt;
+    this.camX += (this.targetCamX(run.x) - this.camX) * Math.min(1, dt * 4);
     this.lastPickX = run.x;
     this.lastPickY = run.y;
     const target = run.y - this.viewH * 0.36 + Math.max(0, run.vy) * 0.25;
@@ -187,8 +210,8 @@ export class Renderer {
     const sx = (Math.random() - 0.5) * this.shakeAmp * 2;
     const sy = (Math.random() - 0.5) * this.shakeAmp * 2;
     const camY = this.camY + sy;
-    const ox = (WALL_VIS + sx) * s;
-    const toX = (x: number) => ox + x * s;
+    const camX = this.camX + sx;
+    const toX = (x: number) => (x - camX) * s;
     const toY = (y: number) => (y - camY) * s;
 
     // background
@@ -215,7 +238,9 @@ export class Renderer {
         continue;
       }
       const backId = BIOMES[biomeIndex(y)].base[0].item;
-      for (let x = -1; x <= WORLD_W; x++) {
+      const xa = Math.max(-1, Math.floor(camX) - 1);
+      const xb = Math.min(this.worldW, Math.ceil(camX + this.viewW) + 1);
+      for (let x = xa; x <= xb; x++) {
         const pxX = Math.floor(toX(x));
         const id = world.get(x, y);
         if (world.isWall(x)) {
@@ -326,8 +351,11 @@ export class Renderer {
     }
   }
 
+  /** Visual size grows with the pickaxe-size upgrade. */
+  pickScale = 1;
+
   private drawPick(img: HTMLCanvasElement, x: number, y: number, angle: number, s: number): void {
-    const size = PICK_SIZE * s;
+    const size = PICK_SIZE * this.pickScale * s;
     const ctx = this.ctx;
     ctx.save();
     ctx.translate(x, y);

@@ -25,7 +25,6 @@ const SPECIAL_KEYS = Object.keys(SPECIAL_BASE) as SpecialSpawn[];
  * deterministically (sequentially, because veins look at the previous row).
  */
 export class World {
-  readonly width = WORLD_W;
   private rows = new Map<number, Uint8Array>();
   private hp = new Map<number, Float32Array>();
   private generatedTo: number;
@@ -37,6 +36,7 @@ export class World {
     readonly luckMult = 1,
     readonly endDepth = CAMPAIGN_DEPTH,
     readonly hpMult = 1,
+    readonly width = WORLD_W,
   ) {
     this.rng = new Rng(seed ^ 0x9e3779b9);
     this.generatedTo = startDepth - 1;

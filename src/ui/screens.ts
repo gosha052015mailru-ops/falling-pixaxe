@@ -4,10 +4,12 @@ const analyticsLogSize = () => analyticsLog().length;
 import { music } from '../audio/music';
 import { sfx } from '../audio/sfx';
 import { BLOCKS } from '../game/blocks';
-import { BIOMES, DIFFICULTY, MAX_TIER, PRESTIGE, SHOP, TIERS, UPGRADES, type Difficulty, type UpgradeId } from '../game/config';
+import { BIOMES, DIFFICULTY, MAX_TIER, MEGA, PRESTIGE, SHOP, TIERS, UPGRADES, WORLD_W, type Difficulty, type MegaId, type UpgradeId } from '../game/config';
 import {
   buyDynamite,
   buyForge,
+  buyMega,
+  megaCost,
   buyTotem,
   buyUpgrade,
   canBuyUpgrade,
@@ -180,8 +182,13 @@ export class Screens {
       case 'upgrades':
         return UPGRADES.filter((u) => canBuyUpgrade(s, u.id)).length;
       case 'forge': {
+        if (!this.app.isUnlocked('forge')) return 0;
         const c = forgeCost(s);
-        return c !== null && s.coins >= c && this.app.isUnlocked('forge') ? 1 : 0;
+        const megas = (['size', 'width'] as MegaId[]).filter((id) => {
+          const m = megaCost(s, id);
+          return m !== null && s.coins >= m;
+        }).length;
+        return (c !== null && s.coins >= c ? 1 : 0) + megas;
       }
       case 'quests':
         ensureQuests(s, now);
@@ -540,10 +547,27 @@ export class Screens {
              : `<button class="btn ${s.coins >= cost ? 'gold' : 'off'} wide" data-a="forge">${icon('fire', 28)}<span>${icon('coin', 24)} <span class="${s.coins >= cost ? '' : 'price-bad'}">${fmt(cost)}</span></span></button>`
          }
        </div>
+       <h2 style="font-size:22px;margin:18px 0 4px">${t('mega')}</h2>
+       <p class="sub" style="margin:0 0 10px">${t('megaDesc')}</p>
+       <div class="list">${(['size', 'width'] as MegaId[]).map((id) => this.megaCard(id)).join('')}</div>
        <div class="list" style="margin-top:14px">${tiers}</div>`,
       'solid',
     );
     this.bindHeader();
+    this.on('[data-mega]', (el) => {
+      const id = el.dataset.mega as MegaId;
+      const before = s.coins;
+      if (buyMega(s, id)) {
+        s.profile.coinsSpent += before - s.coins;
+        sfx.tierUp();
+        vibrate('heavy');
+        track('purchase_mega', { id, level: id === 'size' ? s.pickSize : s.shaftWidth, cost: before - s.coins });
+        this.app.persist();
+        this.forge();
+        this.bumpWallet();
+        this.nav(true);
+      } else sfx.error();
+    });
     this.on('[data-a=forge]', () => {
       const before = s.coins;
       if (buyForge(s)) {
@@ -558,6 +582,25 @@ export class Screens {
         this.nav(true);
       } else sfx.error();
     });
+  }
+
+  private megaCard(id: MegaId): string {
+    const s = this.s;
+    const lvl = id === 'size' ? s.pickSize : s.shaftWidth;
+    const cost = megaCost(s, id);
+    const desc =
+      id === 'size'
+        ? t('megad.size', { a: 1 + lvl, b: 2 + lvl })
+        : t('megad.width', { a: WORLD_W + MEGA.width.step * lvl, b: WORLD_W + MEGA.width.step * (lvl + 1) });
+    const afford = cost !== null && s.coins >= cost;
+    return `<div class="card"><div class="ic">${icon(id === 'size' ? 'pickaxe' : 'arrows', 40)}</div>
+      <div class="info"><div class="nm">${t(`mega.${id}`)}<span class="lv">${t('lvl')} ${lvl}</span></div>
+      <div class="ds">${cost === null ? t('max') : desc}</div></div>
+      ${
+        cost === null
+          ? `<button class="btn sm off" disabled>${t('max')}</button>`
+          : `<button class="btn sm ${afford ? 'gold' : 'off'}" data-mega="${id}">${icon('coin', 22)}<span class="${afford ? '' : 'price-bad'}">${fmt(cost)}</span></button>`
+      }</div>`;
   }
 
   // ───────────────────────── quests & achievements ─────────────────────────

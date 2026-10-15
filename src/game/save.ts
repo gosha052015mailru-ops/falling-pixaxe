@@ -86,6 +86,9 @@ export interface SaveData {
   /** '' = not chosen yet (asked on first launch). */
   difficulty: DifficultyChoice;
   profile: Profile;
+  /** Mega upgrades (levels). */
+  pickSize: number;
+  shaftWidth: number;
   /** The soft "may we remind you?" question was shown (never nag twice). */
   pushAsked: boolean;
 }
@@ -137,6 +140,8 @@ export function newSave(): SaveData {
     lastSeen: 0,
     difficulty: '',
     profile: freshProfile(),
+    pickSize: 0,
+    shaftWidth: 0,
     pushAsked: false,
   };
 }
@@ -159,7 +164,7 @@ export function migrate(raw: unknown): SaveData {
   if (r.version === 1 && (r.runs ?? 0) > 0) out.tutorialDone = true;
   // existing players keep the balance they were playing with
   if (!r.difficulty && (r.runs ?? 0) > 0) out.difficulty = 'normal';
-  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen'] as const) {
+  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen', 'pickSize', 'shaftWidth'] as const) {
     if (typeof out[k] !== 'number' || !Number.isFinite(out[k])) out[k] = base[k];
   }
   return out;

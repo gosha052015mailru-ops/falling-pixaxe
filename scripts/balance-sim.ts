@@ -4,7 +4,7 @@
  *   npm run sim -- [maxRuns] [seed] [--diff=easy|normal|hard]
  */
 import { BIOMES, CAMPAIGN_DEPTH, PRESTIGE, type UpgradeId } from '../src/game/config';
-import { buyDynamite, buyForge, buyUpgrade, canPrestige, deriveStats, doPrestige, dynamiteCost, forgeCost, upgradeCost, upgradeDef } from '../src/game/economy';
+import { buyDynamite, buyForge, buyMega, megaCost, buyUpgrade, canPrestige, deriveStats, doPrestige, dynamiteCost, forgeCost, upgradeCost, upgradeDef } from '../src/game/economy';
 import { Bot } from '../src/game/bot';
 import { applyResult, unlockedCheckpoints } from '../src/game/progress';
 import { Run } from '../src/game/run';
@@ -41,6 +41,13 @@ for (let i = 1; i <= maxRuns; i++) {
   for (let b = 1; b < BIOMES.length; b++) if (r.depth >= BIOMES[b].from && !reached.has(b)) reached.set(b, { run: i, minutes });
   if (r.core && !reached.has(99)) reached.set(99, { run: i, minutes });
 
+  // mega upgrades first: they are the big goals players save for
+  for (const id of ['size', 'width'] as const) {
+    const c = megaCost(save, id);
+    if (c !== null && save.coins >= c && buyMega(save, id)) {
+      console.log(`  ★ ${id} → ${id === 'size' ? save.pickSize : save.shaftWidth} at ~${minutes.toFixed(0)} min (run ${i}, cost ${c}, earned so far ${Math.round(save.totalCoins)})`);
+    }
+  }
   // spend: forge first when affordable, then cheapest weighted upgrade
   for (;;) {
     const fc = forgeCost(save);

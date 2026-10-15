@@ -1623,3 +1623,57 @@ h2 {
   font-weight: 600;
   color: var(--muted);
 }
+
+/* fast-forward button */
+.ff {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 48px;
+  padding: 0 12px 0 8px;
+  margin-right: auto;
+  margin-left: 10px;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  background: linear-gradient(#5a4788, #3c2d62);
+  box-shadow: inset 0 -4px 0 #2a1f47, 0 4px 0 var(--ink);
+  font-size: 18px;
+  font-weight: 900;
+  -webkit-text-stroke: 4px var(--ink);
+  paint-order: stroke fill;
+}
+.ff .ico + .ico {
+  margin-left: -8px;
+}
+.ff b {
+  margin-left: 4px;
+}
+.ff.on {
+  background: linear-gradient(#7fd0ff, #2f86f0);
+  box-shadow: inset 0 -4px 0 #1d5bb0, 0 4px 0 var(--ink);
+}
+.ff.fresh {
+  animation: popc 0.3s, glow 1.2s 2;
+}
+@keyframes glow {
+  50% {
+    filter: brightness(1.4) drop-shadow(0 0 8px #6ff3f0);
+  }
+}
+.ff:active {
+  transform: translateY(3px);
+}
+
+/* compact wallet next to a screen title */
+.topbar h2 + .wallet {
+  gap: 10px;
+}
+.topbar h2 + .wallet .pill {
+  height: 32px;
+  font-size: 15px;
+  padding: 0 9px 0 28px;
+}
+.topbar h2 + .wallet .pill .ico {
+  width: 28px;
+  height: 28px;
+}

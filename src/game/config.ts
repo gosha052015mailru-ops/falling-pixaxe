@@ -128,6 +128,26 @@ export const SHOP = {
   totemGems: 10,
 };
 
+/**
+ * Mega upgrades: expensive milestones bought in the Forge (see GAME_DESIGN §5.8).
+ * Prices are set from the simulated coin curve so that a typical player can afford
+ * level 1 after ~15 min, level 2 after ~45 min, level 3 after ~2 h.
+ */
+export const MEGA = {
+  /** Pickaxe size: each hit also strikes this many extra blocks in the same row. */
+  size: { costs: [3000, 40000, 500000, 4000000, 30000000], max: 5 },
+  /** Shaft width: +2 columns per level. */
+  width: { costs: [2500, 35000, 450000, 3500000, 25000000], max: 5, step: 2 },
+};
+export type MegaId = keyof typeof MEGA;
+
+/** Fast-forward unlocks during a run: [seconds of falling, speed]. */
+export const FAST_FORWARD: [number, number][] = [
+  [10, 1.5],
+  [30, 2],
+  [50, 4],
+];
+
 export type Difficulty = 'easy' | 'normal' | 'hard';
 
 /**

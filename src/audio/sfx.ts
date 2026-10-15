@@ -24,7 +24,7 @@ export class Sfx {
       if (!Ctx) return;
       this.ctx = new Ctx();
       this.master = this.ctx.createGain();
-      this.master.gain.value = 0.5;
+      this.master.gain.value = 0.42;
       this.master.connect(this.ctx.destination);
       const len = this.ctx.sampleRate * 0.5;
       this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -79,7 +79,7 @@ export class Sfx {
   hit(hardness: number): void {
     if (!this.gate('hit', 0.04)) return;
     const f = 180 + Math.min(600, hardness * 6);
-    this.tone(f, 0.06, 'square', 0.08, f * 0.6);
+    this.tone(f, 0.06, 'triangle', 0.08, f * 0.6);
     this.noise(0.05, 0.12, 2500, 'bandpass');
   }
 
@@ -92,7 +92,7 @@ export class Sfx {
       this.tone(f, 0.12, 'triangle', 0.12);
       this.tone(f * 1.5, 0.1, 'sine', 0.06, undefined, 0.04);
     } else {
-      this.tone(110 + Math.min(combo, 30) * 8, 0.07, 'square', 0.05);
+      this.tone(110 + Math.min(combo, 30) * 8, 0.07, 'triangle', 0.05);
     }
   }
 
@@ -109,7 +109,7 @@ export class Sfx {
 
   tierUp(): void {
     if (!this.gate('tier', 0.2)) return;
-    [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.18, 'square', 0.09, undefined, i * 0.07));
+    [523, 659, 784, 1047, 1319].forEach((f, i) => this.tone(f, 0.18, 'triangle', 0.09, undefined, i * 0.07));
     this.tone(1047, 0.6, 'triangle', 0.08, 2093, 0.35);
   }
 
@@ -117,7 +117,7 @@ export class Sfx {
     if (!this.gate('anvil', 0.1)) return;
     this.tone(880, 0.5, 'triangle', 0.12);
     this.tone(1320, 0.4, 'sine', 0.08);
-    this.tone(660, 0.3, 'square', 0.03);
+    this.tone(660, 0.3, 'triangle', 0.03);
   }
 
   chest(): void {
@@ -127,8 +127,8 @@ export class Sfx {
 
   coin(): void {
     if (!this.gate('coin', 0.05)) return;
-    this.tone(988, 0.06, 'square', 0.06);
-    this.tone(1319, 0.15, 'square', 0.06, undefined, 0.06);
+    this.tone(988, 0.06, 'triangle', 0.06);
+    this.tone(1319, 0.15, 'triangle', 0.06, undefined, 0.06);
   }
 
   magic(): void {
@@ -154,28 +154,96 @@ export class Sfx {
   shatter(): void {
     if (!this.gate('shatter', 0.2)) return;
     this.noise(0.5, 0.35, 5000, 'highpass', 800);
-    [440, 330, 220, 147].forEach((f, i) => this.tone(f, 0.2, 'square', 0.07, f * 0.8, i * 0.09));
+    [440, 330, 220, 147].forEach((f, i) => this.tone(f, 0.2, 'triangle', 0.07, f * 0.8, i * 0.09));
   }
 
   fanfare(): void {
     if (!this.gate('fanfare', 0.3)) return;
-    [392, 523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.2, 'square', 0.08, undefined, i * 0.1));
+    [392, 523, 659, 784, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.2, 'triangle', 0.08, undefined, i * 0.1));
+  }
+
+  /** Pleasant chime for valuable ores (gold, ruby, sapphire…). */
+  rare(): void {
+    if (!this.gate('rare', 0.25)) return;
+    [1319, 1760, 2637].forEach((f, i) => this.tone(f, 0.5, 'sine', 0.07, undefined, i * 0.06));
+  }
+
+  /**
+   * "Oh yes!" for the best ores (diamond, emerald, amethyst, star ore): a tiny formant
+   * voice (vowel filters over a buzzy source) followed by a sparkle. Rate-limited.
+   */
+  ohYes(): void {
+    if (!this.gate('ohyes', 3)) return;
+    const ctx = this.ctx!;
+    const t = ctx.currentTime + 0.02;
+    // source: sawtooth with a sung pitch contour "oh" ↘, "yes" ↗↘
+    const src = ctx.createOscillator();
+    src.type = 'sawtooth';
+    src.frequency.setValueAtTime(230, t);
+    src.frequency.linearRampToValueAtTime(190, t + 0.3);
+    src.frequency.setValueAtTime(240, t + 0.36);
+    src.frequency.linearRampToValueAtTime(300, t + 0.5);
+    src.frequency.linearRampToValueAtTime(250, t + 0.72);
+    const vib = ctx.createOscillator();
+    const vibAmt = ctx.createGain();
+    vib.frequency.value = 6;
+    vibAmt.gain.value = 5;
+    vib.connect(vibAmt).connect(src.frequency);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.exponentialRampToValueAtTime(0.5, t + 0.04);
+    env.gain.setValueAtTime(0.5, t + 0.26);
+    env.gain.exponentialRampToValueAtTime(0.08, t + 0.33);
+    env.gain.exponentialRampToValueAtTime(0.55, t + 0.4);
+    env.gain.setValueAtTime(0.5, t + 0.62);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.78);
+    // formants: "o" → "y(i)" → "e"
+    const formants: [number, number, number, number, number][] = [
+      // [o, i, e, Q, gain]
+      [450, 300, 530, 7, 1],
+      [800, 2250, 1850, 9, 0.6],
+      [2700, 3000, 2600, 10, 0.25],
+    ];
+    const mix = ctx.createGain();
+    mix.gain.value = 1.4;
+    for (const [fo, fi, fe, q, g] of formants) {
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.Q.value = q;
+      bp.frequency.setValueAtTime(fo, t);
+      bp.frequency.setValueAtTime(fo, t + 0.3);
+      bp.frequency.linearRampToValueAtTime(fi, t + 0.38);
+      bp.frequency.linearRampToValueAtTime(fe, t + 0.5);
+      const a = ctx.createGain();
+      a.gain.value = g;
+      env.connect(bp).connect(a).connect(mix);
+    }
+    src.connect(env);
+    mix.connect(this.master!);
+    src.start(t);
+    vib.start(t);
+    src.stop(t + 0.8);
+    vib.stop(t + 0.8);
+    // the "s"
+    this.noise(0.14, 0.07, 6000, 'highpass', undefined, 0.68);
+    // sparkle
+    [1568, 2093, 2637, 3136].forEach((f, i) => this.tone(f, 0.6, 'sine', 0.05, undefined, 0.75 + i * 0.07));
   }
 
   click(): void {
     if (!this.gate('click', 0.03)) return;
-    this.tone(660, 0.04, 'square', 0.06);
+    this.tone(660, 0.04, 'triangle', 0.06);
   }
 
   buy(): void {
     if (!this.gate('buy', 0.05)) return;
-    this.tone(523, 0.08, 'square', 0.07);
-    this.tone(1047, 0.12, 'square', 0.07, undefined, 0.06);
+    this.tone(523, 0.08, 'triangle', 0.07);
+    this.tone(1047, 0.12, 'triangle', 0.07, undefined, 0.06);
   }
 
   error(): void {
     if (!this.gate('error', 0.1)) return;
-    this.tone(150, 0.15, 'square', 0.08, 100);
+    this.tone(150, 0.15, 'triangle', 0.08, 100);
   }
 }
 

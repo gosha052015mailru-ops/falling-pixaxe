@@ -1,6 +1,9 @@
 import {
   DIFFICULTY,
   FORGE_COSTS,
+  MEGA,
+  WORLD_W,
+  type MegaId,
   MAX_TIER,
   PRESTIGE,
   RUN,
@@ -62,6 +65,25 @@ export function dynamiteCost(save: SaveData): number {
   return niceRound(SHOP.dynamiteBase * Math.pow(SHOP.dynamiteGrowth, n));
 }
 
+function megaLevel(save: SaveData, id: MegaId): number {
+  return id === 'size' ? save.pickSize : save.shaftWidth;
+}
+
+export function megaCost(save: SaveData, id: MegaId): number | null {
+  const lvl = megaLevel(save, id);
+  return lvl >= MEGA[id].max ? null : MEGA[id].costs[lvl];
+}
+
+export function buyMega(save: SaveData, id: MegaId): boolean {
+  const cost = megaCost(save, id);
+  if (cost === null || save.coins < cost) return false;
+  save.coins -= cost;
+  if (id === 'size') save.pickSize++;
+  else save.shaftWidth++;
+  save.life.upgradesBought++;
+  return true;
+}
+
 export function buyDynamite(save: SaveData): boolean {
   const cost = dynamiteCost(save);
   if (save.coins < cost) return false;
@@ -114,6 +136,10 @@ export interface RunStats {
   maxDurBase: number;
   /** Block HP multiplier from difficulty. */
   hpMult: number;
+  /** Extra blocks struck per hit (mega upgrade). */
+  pickSize: number;
+  /** Shaft width in columns. */
+  worldWidth: number;
   powerMult: number;
   coinMult: number;
   luckMult: number;
@@ -136,6 +162,8 @@ export function deriveStats(save: SaveData): RunStats {
   return {
     maxDurBase: Math.round((RUN.baseDurability + RUN.durPerLevel * u.durability) * diff.dur),
     hpMult: diff.hp,
+    pickSize: save.pickSize,
+    worldWidth: WORLD_W + MEGA.width.step * save.shaftWidth,
     powerMult: (1 + 0.15 * u.power) * shardDmg,
     coinMult: (1 + 0.1 * u.fortune) * shardCoin * diff.coins,
     luckMult: 1 + 0.05 * u.luck,

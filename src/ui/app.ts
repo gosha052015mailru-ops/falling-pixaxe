@@ -4,7 +4,7 @@ import { BIOME_THEMES, music, type ThemeId } from '../audio/music';
 import { sfx } from '../audio/sfx';
 import { blockDef } from '../game/blocks';
 import { Bot } from '../game/bot';
-import { BIOMES, TIERS, biomeIndex } from '../game/config';
+import { BIOMES, FAST_FORWARD, TIERS, biomeIndex } from '../game/config';
 import { addCoins, deriveStats } from '../game/economy';
 import { trackQuests, unlocked } from '../game/meta';
 import { addPlayTime, recordRun, startSession, userProperties } from '../game/profile';
@@ -24,7 +24,8 @@ import { Screens, type ScreenId } from './screens';
 type Mode = 'menu' | 'play' | 'paused' | 'dying' | 'revive' | 'results';
 
 const FIXED_DT = 1 / 120;
-const MAX_STEPS = 8;
+/** Enough sub-steps for ×4 fast-forward at 60 fps. */
+const MAX_STEPS = 36;
 /** Background longer than this starts a new analytics session (industry default: 30 min). */
 const SESSION_TIMEOUT = 30 * 60_000;
 const BANNER_GAP = 4;
@@ -47,6 +48,9 @@ export class App {
   private blockImg = new Map<number, string>();
   private banners: { html: string; color: string }[] = [];
   private bannerBusy = false;
+  /** Fast-forward multiplier chosen by the player for this run. */
+  speed = 1;
+  private ffUnlocked = 0;
   private hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, fever: false, buffs: '' };
   private frameTimes: number[] = [];
   private coachState: 'none' | 'tap' | 'bomb' = 'none';
@@ -176,13 +180,15 @@ export class App {
    * Tester shortcut (console: game.cheat({...})). Edits the live save — editing localStorage
    * directly does not work because the game writes its in-memory state back on reload.
    */
-  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number } = {}): void {
+  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number; size?: number; width?: number } = {}): void {
     const s = this.save;
     s.coins += o.coins ?? 1e6;
     s.gems += o.gems ?? 100;
     if (o.level) s.level = o.level;
     if (o.depth !== undefined) s.bestDepth = Math.max(s.bestDepth, o.depth);
     if (o.forge !== undefined) s.forgeTier = Math.max(0, Math.min(TIERS.length - 1, o.forge));
+    if (o.size !== undefined) s.pickSize = Math.max(0, Math.min(5, o.size));
+    if (o.width !== undefined) s.shaftWidth = Math.max(0, Math.min(5, o.width));
     if (!s.difficulty) s.difficulty = 'normal';
     s.tutorialDone = true;
     closeModal();
@@ -266,6 +272,9 @@ export class App {
     $('hud').classList.remove('hidden');
     this.hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, fever: false, buffs: '' };
     this.banners = [];
+    this.speed = 1;
+    this.ffUnlocked = 0;
+    this.renderFF();
     this.setCoach(tutorial ? 'tap' : 'none');
     track('run_start', { n: this.save.runs + 1, start: stats.startDepth, tier: stats.startTier, tutorial });
   }
@@ -390,7 +399,8 @@ export class App {
 
     if (simulate) {
       // Fixed timestep: identical physics on 60/90/120 Hz screens.
-      this.acc = Math.min(this.acc + dt, FIXED_DT * MAX_STEPS);
+      const mult = this.mode === 'play' || this.mode === 'dying' ? this.speed : 1;
+      this.acc = Math.min(this.acc + dt * mult, FIXED_DT * MAX_STEPS);
       let broke = false;
       while (this.acc >= FIXED_DT) {
         this.acc -= FIXED_DT;
@@ -444,7 +454,10 @@ export class App {
       case 'break': {
         const def = blockDef(e.id);
         sfx.break(e.combo, !!def.ore);
-        if (def.ore && def.value >= 50) vibrate('light');
+        if (def.ore && def.value >= 50) {
+          sfx.ohYes();
+          vibrate('medium');
+        } else if (def.ore && def.value >= 25) sfx.rare();
         break;
       }
       case 'bounce':
@@ -581,7 +594,39 @@ export class App {
     setTimeout(() => this.nextBanner(), this.banners.length ? 900 : 1500);
   }
 
+  /** Speeds available after N seconds of falling: ×1.5 at 10 s, ×2 at 30 s, ×4 at 50 s. */
+  private checkFastForward(): void {
+    const n = FAST_FORWARD.filter(([sec]) => this.run.time >= sec).length;
+    if (n !== this.ffUnlocked) {
+      this.ffUnlocked = n;
+      this.renderFF(true);
+    }
+  }
+
+  private renderFF(fresh = false): void {
+    const btn = $('ffBtn');
+    btn.classList.toggle('hidden', this.ffUnlocked === 0);
+    btn.classList.toggle('on', this.speed > 1);
+    btn.innerHTML = `${icon('play', 18)}${icon('play', 18)}<b>x${this.speed}</b>`;
+    if (fresh) {
+      btn.classList.remove('fresh');
+      void btn.offsetWidth;
+      btn.classList.add('fresh');
+    }
+  }
+
+  /** Tap cycles through the unlocked speeds: x1 → x1.5 → x2 → x4 → x1. */
+  cycleSpeed(): void {
+    const options = [1, ...FAST_FORWARD.slice(0, this.ffUnlocked).map(([, v]) => v)];
+    const i = options.indexOf(this.speed);
+    this.speed = options[(i + 1) % options.length];
+    sfx.click();
+    track('fast_forward', { speed: this.speed, t: Math.round(this.run.time) });
+    this.renderFF();
+  }
+
   private updateHud(): void {
+    this.checkFastForward();
     const r = this.run;
     const h = this.hud;
     const dur = Math.max(0, Math.ceil(r.durability));
@@ -674,6 +719,10 @@ export class App {
       else sfx.error();
     });
     $('pauseBtn').addEventListener('click', () => this.pause());
+    $('ffBtn').addEventListener('pointerdown', (ev) => {
+      ev.stopPropagation();
+      if (this.mode === 'play') this.cycleSpeed();
+    });
     window.addEventListener('keydown', (ev) => {
       if (this.mode !== 'play') {
         if (ev.key === 'Escape') this.back();
@@ -735,6 +784,8 @@ export class App {
   }
 
   goMenu(): void {
+    this.setCoach('none');
+    $('hud').classList.add('hidden');
     if (this.mode !== 'menu') {
       this.mode = 'menu';
       this.startDemo();
