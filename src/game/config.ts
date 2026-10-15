@@ -6,22 +6,26 @@ export const WORLD_W = 9;
 export const CAMPAIGN_DEPTH = 1000;
 
 export const PHYS = {
-  gravity: 20,
-  maxFall: 15,
+  // Tuned by `npm run playtest`: a heavy, readable chop-chop fall (≈ half a screen per second
+  // at full speed), not a drill through butter.
+  gravity: 13,
+  maxFall: 9,
   radius: 0.38,
-  restitution: 0.45,
-  minBounce: 5,
-  sideKickMin: 0.8,
-  sideKickMax: 3.5,
-  breakKeep: 0.85,
-  pierceKeep: 0.95,
-  airDragX: 0.6,
+  restitution: 0.4,
+  minBounce: 3.5,
+  sideKickMin: 0.5,
+  sideKickMax: 2,
+  /** Speed kept after breaking a block: every block costs momentum. */
+  breakKeep: 0.62,
+  pierceKeep: 0.75,
+  airDragX: 2.6,
   lavaDrag: 3,
   maxStep: 0.2,
-  nudgeImpulse: 7,
-  impactRef: 8,
+  /** Sideways nudge: a controlled shift of about one column. */
+  nudgeImpulse: 4,
+  impactRef: 6,
   impactMin: 0.6,
-  impactMax: 2.0,
+  impactMax: 1.6,
   critMult: 3,
   /** Consecutive hits on the same block: +focusStep damage each, up to focusMax stacks. */
   focusStep: 0.2,
@@ -29,13 +33,14 @@ export const PHYS = {
 };
 
 export const RUN = {
-  baseDurability: 60,
-  durPerLevel: 6,
+  baseDurability: 100,
+  durPerLevel: 8,
   /** Block HP multiplier grows with depth: hp × (1 + depth / hpDepthDiv) ^ hpDepthPow. */
   hpDepthDiv: 80,
   hpDepthPow: 1.2,
   /** Workbenches can raise the tier at most this much above the forge tier per run. */
-  workbenchTierCap: 3,
+  /** Base in-run tier-ups allowed above the forge tier (+1 more per 3 forge tiers). */
+  workbenchTierCap: 1,
   comboWindow: 1.2,
   comboStep: 0.025,
   comboCap: 40,
@@ -168,7 +173,7 @@ export type SpecialSpawn = 'workbench' | 'anvil' | 'tnt' | 'chest' | 'furnace' |
 
 /** Base per-cell spawn probabilities. */
 export const SPECIAL_BASE: Record<SpecialSpawn, number> = {
-  workbench: 0.0025,
+  workbench: 0.0015,
   anvil: 0.0025,
   tnt: 0.006,
   chest: 0.0025,

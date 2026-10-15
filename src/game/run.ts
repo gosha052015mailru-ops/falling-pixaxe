@@ -173,22 +173,23 @@ export class Run {
     const w = this.world;
     const cx = Math.floor(this.x);
     const place: [number, number, B][] = [
-      [cx - 1, 6, B.WORKBENCH],
-      [cx, 6, B.WORKBENCH],
-      [cx + 1, 6, B.WORKBENCH],
-      [cx, 13, B.CHEST],
-      [cx - 1, 19, B.TNT],
-      [cx + 1, 20, B.TNT],
-      [cx, 22, B.TNT],
-      [cx, 28, B.ANVIL],
-      [cx - 1, 34, B.WORKBENCH],
-      [cx, 34, B.WORKBENCH],
-      [cx + 1, 34, B.WORKBENCH],
+      // one guaranteed upgrade (three cells wide so it can't be missed; the run cap allows only one)
+      [cx - 1, 8, B.WORKBENCH],
+      [cx, 8, B.WORKBENCH],
+      [cx + 1, 8, B.WORKBENCH],
+      [cx, 16, B.CHEST],
+      [cx, 24, B.TNT],
     ];
-    // soft dirt column above the first workbench: the pickaxe drills straight into it
-    for (let y = 1; y < 6; y++) for (let x = cx - 1; x <= cx + 1; x++) w.set(x, y, B.DIRT);
+    // plain dirt above the workbench: the first seconds teach the chop rhythm
+    for (let y = 1; y < 8; y++) for (let x = cx - 1; x <= cx + 1; x++) w.set(x, y, B.DIRT);
     for (const [x, y, id] of place) w.set(x, y, id);
     this.hold = true;
+  }
+
+  /** Highest tier workbenches can reach in this run. */
+  get workbenchCap(): number {
+    const st = this.stats.startTier;
+    return Math.min(MAX_TIER, st + RUN.workbenchTierCap + Math.floor(st / 3));
   }
 
   get fever(): boolean {
@@ -413,7 +414,7 @@ export class Run {
       return;
     }
 
-    const impact = Math.max(PHYS.impactMin, Math.min(PHYS.impactMax, PHYS.impactMin + 0.4 * (vn / PHYS.impactRef)));
+    const impact = Math.max(PHYS.impactMin, Math.min(PHYS.impactMax, PHYS.impactMin + 0.45 * (vn / PHYS.impactRef)));
     const critChance = this.stats.critChance + TIERS[this.tier].critBonus;
     const crit = this.rng.chance(critChance);
     const cell = `${cx},${cy}`;
@@ -533,7 +534,7 @@ export class Run {
   private triggerSpecial(kind: NonNullable<ReturnType<typeof blockDef>['special']>, x: number, y: number, cause: BreakCause): void {
     switch (kind) {
       case 'workbench': {
-        if (this.tier < Math.min(MAX_TIER, this.stats.startTier + RUN.workbenchTierCap)) {
+        if (this.tier < this.workbenchCap) {
           const oldMax = this.maxDur;
           this.tier++;
           this.maxDur = this.computeMaxDur(this.tier);
@@ -541,12 +542,12 @@ export class Run {
           this.durability = Math.min(this.maxDur, this.durability + heal);
           this.tierUps++;
           this.emit({ t: 'tierUp', tier: this.tier, maxed: false });
+          this.slow(0.6, 0.3);
+          this.hitstop = 0.08;
         } else {
-          this.bonusCoins += this.blockValue(B.DIAMOND, y) * 5;
-          this.emit({ t: 'tierUp', tier: this.tier, maxed: true });
+          // cap reached for this run: a quiet small bonus, no banner spam
+          this.bonusCoins += this.blockValue(B.STONE, y) * 8;
         }
-        this.slow(0.6, 0.3);
-        this.hitstop = 0.08;
         break;
       }
       case 'anvil': {
@@ -600,7 +601,7 @@ export class Run {
     let amount: number;
     if (roll < 0.5) {
       loot = 'coins';
-      amount = Math.round(avgOre * this.rng.range(20, 60) * this.stats.coinMult * (1 + y / RUN.depthValueDiv));
+      amount = Math.round(avgOre * this.rng.range(8, 20) * this.stats.coinMult * (1 + y / RUN.depthValueDiv));
       this.bonusCoins += amount;
     } else if (roll < 0.7) {
       loot = 'gems';
@@ -667,11 +668,14 @@ export class Run {
     const d = Math.hypot(dx, dy);
     const reach = r * 1.6;
     if (d < reach) {
-      const k = 14 * (1 - d / reach);
+      const k = 9 * (1 - d / reach);
       const nx = d > 0.1 ? dx / d : this.rng.range(-0.5, 0.5);
       const ny = d > 0.1 ? dy / d : -1;
       this.vx += nx * k;
       this.vy += ny * k;
+      // a blast nudges the pickaxe, it must never fling it across the screen
+      this.vx = Math.max(-7, Math.min(7, this.vx));
+      this.vy = Math.max(-9, this.vy);
       this.angVel += this.rng.sign() * 15;
     }
     this.hitstop = Math.max(this.hitstop, 0.04);

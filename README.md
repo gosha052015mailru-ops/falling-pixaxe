@@ -14,6 +14,7 @@ npm install
 npm run dev        # http://localhost:5173 — открыть с телефона в той же сети или в мобильном режиме DevTools
 npm test           # unit-тесты ядра
 npm run sim        # симуляция баланса: npm run sim -- 600 42 --diff=hard
+npm run playtest   # первые забеги нового игрока: темп, удары, баннеры, уровни
 npm run build      # сборка в dist/
 ```
 

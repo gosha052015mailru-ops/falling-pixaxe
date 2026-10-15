@@ -104,3 +104,27 @@ describe('player profile', () => {
     expect(up.segment).toBe('casual');
   });
 });
+
+describe('new player pacing (playtest guards)', () => {
+  it('first run: exactly one pickaxe upgrade, no player level-up, a calm fall speed', async () => {
+    const { Bot } = await import('../src/game/bot');
+    const { applyResult } = await import('../src/game/progress');
+    const s = newSave();
+    s.difficulty = 'normal';
+    const run = new Run({ seed: 3, stats: deriveStats(s), bestDepth: 0, milestones: [], tutorial: true });
+    run.nudge(1);
+    const bot = new Bot(0.45);
+    let maxV = 0;
+    while (!run.over && run.time < 300) {
+      run.step(1 / 120);
+      maxV = Math.max(maxV, Math.hypot(run.vx, run.vy));
+      bot.update(run, 1 / 120, run.drainEvents().some((e) => e.t === 'break'));
+    }
+    const r = run.result();
+    expect(r.tierUps).toBe(1);
+    expect(r.time).toBeGreaterThan(25);
+    expect(maxV).toBeLessThan(12);
+    applyResult(s, r);
+    expect(s.level).toBe(1);
+  });
+});

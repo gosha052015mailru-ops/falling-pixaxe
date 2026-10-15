@@ -134,7 +134,7 @@ describe('tutorial run & revive', () => {
     run.step(1 / 60);
     expect(run.y).toBe(y);
     run.nudge(1);
-    for (let i = 0; i < 300 && run.tier === 0; i++) run.step(1 / 60);
+    for (let i = 0; i < 900 && run.tier === 0; i++) run.step(1 / 60);
     expect(run.tier).toBeGreaterThan(0);
   });
   it('revives a broken run once', () => {

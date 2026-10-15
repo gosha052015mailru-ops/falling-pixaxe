@@ -34,6 +34,8 @@ export interface Profile {
   pushOpens: number;
   history: RunRecord[];
   retentionSent: number[];
+  /** save.runs value when the second chance was last offered. */
+  lastReviveOffer: number;
 }
 
 function randomId(): string {
@@ -59,6 +61,7 @@ export function freshProfile(now = Date.now()): Profile {
     pushOpens: 0,
     history: [],
     retentionSent: [],
+    lastReviveOffer: -99,
   };
 }
 

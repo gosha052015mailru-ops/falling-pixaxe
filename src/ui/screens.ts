@@ -52,6 +52,7 @@ import {
 } from '../game/meta';
 import { RETENTION_DAYS, playerMetrics } from '../game/profile';
 import { nextGoal, unlockedCheckpoints } from '../game/progress';
+import { dayKey } from '../game/time';
 import { pushPermission, requestPush } from '../notifications';
 import { Rng } from '../game/rng';
 import { isNative, setVibration, vibrate } from '../platform';
@@ -60,6 +61,11 @@ import { $, bar, closeModal, hms, modalOpen, msToMidnight, openModal, rewardTile
 import { fmt } from './format';
 import { setLang, t } from './i18n';
 import { UPGRADE_ICON, icon } from './icons';
+
+/** Features that unlock exactly at this level. */
+function featuresAt(level: number): Feature[] {
+  return (Object.keys(FEATURE_LEVEL) as Feature[]).filter((f) => FEATURE_LEVEL[f] === level);
+}
 
 export type ScreenId = 'home' | 'upgrades' | 'forge' | 'quests' | 'collection' | 'shop' | 'settings' | 'profile';
 
@@ -76,6 +82,7 @@ export class Screens {
   private questTab: 'quests' | 'achievements' = 'quests';
   private confirmPrestige = false;
   private popupQueue: (() => void)[] = [];
+  private dailyShownOn = '';
 
   constructor(private app: App) {}
 
@@ -389,27 +396,40 @@ export class Screens {
   }
 
   /** Popups that should appear on the home screen (level-ups, daily reward). */
+  /**
+   * Popups on returning to the menu — at most ONE per visit, in priority order:
+   * feature unlock > daily reward (not on install day, once a day) > notification soft-ask.
+   * Plain level-ups never pop up: they are shown inline on the results screen.
+   */
   autoPopups(): void {
     const s = this.s;
+    const now = this.app.now();
     const rep = this.app.report;
-    if (rep) {
-      for (const lvl of rep.levelsReached) this.popupQueue.push(() => this.levelUpModal(lvl));
-      rep.levelsReached = [];
+    const levels = rep?.levelsReached ?? [];
+    if (rep) rep.levelsReached = [];
+    if (modalOpen()) return;
+    const unlockLevels = levels.filter((l) => featuresAt(l).length > 0);
+    if (unlockLevels.length) {
+      this.levelUpModal(unlockLevels[unlockLevels.length - 1], unlockLevels);
+      return;
     }
-    if (this.app.isUnlocked('daily') && dailyStatus(s, this.app.now()).canClaim) this.popupQueue.push(() => this.daily());
-    // Soft-ask for notifications once the player has seen the value (after a few runs), never on first launch.
-    if (isNative && !s.pushAsked && s.runs >= 2 && s.settings.notifications) {
+    const today = dayKey(now);
+    const installDay = dayKey(s.profile.installAt) === today;
+    if (this.app.isUnlocked('daily') && !installDay && this.dailyShownOn !== today && dailyStatus(s, now).canClaim) {
+      this.dailyShownOn = today;
+      this.daily();
+      return;
+    }
+    // Ask about notifications only when the player clearly came back (2nd+ session, 8+ runs).
+    if (isNative && !s.pushAsked && s.runs >= 8 && s.profile.sessions >= 2 && s.settings.notifications) {
       void pushPermission().then((p) => {
-        if (p === 'prompt') {
-          this.popupQueue.push(() => this.pushAsk());
-          this.nextPopup();
-        } else if (!s.pushAsked) {
+        if (p === 'prompt' && !modalOpen()) this.pushAsk();
+        else if (p !== 'prompt') {
           s.pushAsked = true;
           this.app.persist();
         }
       });
     }
-    this.nextPopup();
   }
 
   private nextPopup(): void {
@@ -923,6 +943,7 @@ export class Screens {
           <div><span>${t('blocks')} · ${t('bestCombo')}</span><span class="v">${r.blocks} · ${r.bestCombo}</span></div>
           <div class="tot"><span>${t('total')}</span><span class="v">${icon('coin', 30)}${fmt(r.totalCoins * mult)}</span></div>
           <div class="xpline">${icon('star', 26)}<span>${t('lvl')} ${s.level}</span>${bar(s.xp / xpForLevel(s.level), 'purple', `+${rep.xp} ${t('xp')}`)}</div>
+          ${rep.levelsReached.length ? `<div class="qdone" style="color:var(--gold)">${icon('star', 22)}${t('levelUpInline', { n: s.level })} +${rep.levelsReached.reduce((g, l) => g + (levelReward(s, l).gems ?? 0), 0)} ${icon('gem', 16)}</div>` : ''}
         </div>
         ${newBlocks}
         ${rep.questsDone.length ? `<div class="panel">${rep.questsDone.map((q) => `<div class="qdone">${icon('check', 22)}${t('questDoneToast')} · ${t(`q.${q.type}`, { n: fmt(q.target) })}</div>`).join('')}</div>` : ''}
@@ -955,7 +976,7 @@ export class Screens {
     this.on('[data-a=menu]', () => toMenu('home'));
     this.on('[data-a=again]', () => {
       sfx.click();
-      if (this.app.report?.levelsReached.length) return toMenu('home');
+      if (this.app.report?.levelsReached.some((l) => featuresAt(l).length)) return toMenu('home');
       this.app.startRun();
     });
   }
@@ -1046,9 +1067,9 @@ export class Screens {
     );
   }
 
-  private levelUpModal(level: number): void {
+  private levelUpModal(level: number, levels: number[] = [level]): void {
     const s = this.s;
-    const unlockedNow = (Object.keys(FEATURE_LEVEL) as Feature[]).filter((f) => FEATURE_LEVEL[f] === level);
+    const unlockedNow = levels.flatMap((l) => featuresAt(l));
     // Reward was already granted in addXp; show it.
     const reward = levelReward(s, level);
     sfx.fanfare();

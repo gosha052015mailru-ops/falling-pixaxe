@@ -19,12 +19,13 @@ export function rewardScale(save: SaveData): number {
 
 // ───────────────────────── level ─────────────────────────
 
+/** Level 1→2 takes ~3 early runs; later levels take a handful of runs each. */
 export function xpForLevel(level: number): number {
-  return Math.round(40 * Math.pow(level, 1.6));
+  return Math.round(250 * Math.pow(level, 1.4));
 }
 
 export function runXp(blocks: number, depthGained: number): number {
-  return Math.round(blocks + depthGained * 3);
+  return Math.round(blocks + depthGained * 2);
 }
 
 export interface Reward {
@@ -54,16 +55,17 @@ export function addXp(save: SaveData, xp: number): number[] {
 
 export type Feature = 'upgrades' | 'forge' | 'quests' | 'collection' | 'items' | 'freeChest' | 'idle' | 'achievements' | 'daily';
 
+/** One new system at a time: never more than two unlocks on a level-up. */
 export const FEATURE_LEVEL: Record<Feature, number> = {
   upgrades: 1,
-  daily: 2,
   forge: 2,
-  quests: 2,
-  collection: 2,
-  items: 3,
-  freeChest: 3,
-  idle: 3,
-  achievements: 4,
+  quests: 3,
+  daily: 3,
+  items: 4,
+  freeChest: 4,
+  idle: 5,
+  collection: 5,
+  achievements: 6,
 };
 
 export function unlocked(save: SaveData, f: Feature): boolean {

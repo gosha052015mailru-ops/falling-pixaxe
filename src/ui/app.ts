@@ -27,6 +27,7 @@ const FIXED_DT = 1 / 120;
 const MAX_STEPS = 8;
 /** Background longer than this starts a new analytics session (industry default: 30 min). */
 const SESSION_TIMEOUT = 30 * 60_000;
+const BANNER_GAP = 4;
 
 export class App {
   save: SaveData = loadSave();
@@ -54,6 +55,8 @@ export class App {
   private activeSince = Date.now();
   private backgroundAt = 0;
   private musicBiome = -1;
+  private lastMinorBanner = -1e9;
+  private bombHintShown = false;
 
   constructor() {
     const st = this.save.settings;
@@ -249,12 +252,24 @@ export class App {
   }
 
   /** Called when the pickaxe breaks: offer a second chance once per run. */
+  /** Second chance only when there is something worth saving (a good run), never in the tutorial. */
+  private reviveWorthIt(): boolean {
+    const r = this.run;
+    const best = this.save.bestDepth;
+    if (r.revives > 0 || r.core || r.init.tutorial || r.depth < 20) return false;
+    // frequency cap: at most once every 3 runs
+    if (this.save.runs - this.save.profile.lastReviveOffer < 3) return false;
+    // only for a run that is fighting for the record
+    return r.depth >= best * 0.85;
+  }
+
   private onBroken(): void {
-    if (this.run.revives === 0 && !this.run.core && this.run.depth > 3) {
+    if (this.reviveWorthIt()) {
       this.mode = 'revive';
       $('hud').classList.add('hidden');
-      this.ui.reviveOffer(this.save.runs === 0);
-      if (this.save.runs > 0) this.save.profile.adsOffered++;
+      this.ui.reviveOffer(false);
+      this.save.profile.adsOffered++;
+      this.save.profile.lastReviveOffer = this.save.runs;
       track('ad_offer', { placement: 'revive' });
     } else {
       this.mode = 'dying';
@@ -420,23 +435,23 @@ export class App {
       case 'heal':
         sfx.anvil();
         vibrate('medium');
-        this.banner(`<div class="t">${t('heal')}</div><div class="s">+${e.amount}</div>`, '#5dff7a');
+        this.banner(`<div class="t">${t('heal')}</div><div class="s">+${e.amount}</div>`, '#5dff7a', false);
         break;
       case 'chest': {
         sfx.chest();
         vibrate('medium');
         const key = { coins: 'chestCoins', gems: 'chestGems', dynamite: 'chestDynamite', durability: 'chestDurability' }[e.loot];
-        this.banner(`<div class="t">${t(key, { n: fmt(e.amount) })}</div>`, '#ffd23f');
+        this.banner(`<div class="t">${t(key, { n: fmt(e.amount) })}</div>`, '#ffd23f', false);
         break;
       }
       case 'furnace':
         sfx.magic();
-        this.banner(`<div class="t">${t('furnace')}</div>`, '#ff8c1a');
+        this.banner(`<div class="t">${t('furnace')}</div>`, '#ff8c1a', false);
         break;
       case 'enchant':
         sfx.magic();
         vibrate('medium');
-        this.banner(`<div class="t">${t(`ench.${e.id}`)}</div>`, '#c77dff');
+        this.banner(`<div class="t">${t(`ench.${e.id}`)}</div>`, '#c77dff', false);
         break;
       case 'gem':
         sfx.coin();
@@ -480,7 +495,7 @@ export class App {
         }
         break;
       case 'combo':
-        if (e.n % 25 !== 0 && e.n % 10 === 0 && e.n >= 20) this.banner(`<div class="t">${t('combo', { n: e.n })}</div>`, '#ff8800');
+        // the HUD combo counter already celebrates this — no banner
         break;
       case 'fever':
         sfx.fanfare();
@@ -488,7 +503,11 @@ export class App {
         this.banner(`<div class="t">${t('fever')}</div><div class="s">${t('feverSub')}</div>`, '#ff7ad9');
         break;
       case 'stuck':
-        if (this.save.runs < 5 && this.run.depth > 8 && this.run.dynamite > 0 && this.coachState === 'none') this.setCoach('bomb');
+        // taught once: until the player has used dynamite at least once
+        if (!this.bombHintShown && this.save.life.dynamiteUsed === 0 && this.run.dynamiteUsed === 0 && this.run.depth > 8 && this.run.dynamite > 0 && this.coachState === 'none') {
+          this.bombHintShown = true;
+          this.setCoach('bomb');
+        }
         break;
       case 'dynamite':
         if (this.coachState === 'bomb') this.setCoach('none');
@@ -505,8 +524,15 @@ export class App {
     el.classList.add('hurt');
   }
 
-  banner(html: string, color: string): void {
-    if (this.banners.length >= 3) this.banners.shift();
+  /**
+   * In-run banners. Important moments always show; minor ones (chest, furnace, repair…)
+   * at most once per BANNER_GAP seconds so the screen never turns into a slot machine.
+   */
+  banner(html: string, color: string, important = true): void {
+    const now = performance.now();
+    if (!important && (this.bannerBusy || now - this.lastMinorBanner < BANNER_GAP * 1000)) return;
+    if (!important) this.lastMinorBanner = now;
+    if (this.banners.length >= 2) this.banners.shift();
     this.banners.push({ html, color });
     if (!this.bannerBusy) this.nextBanner();
   }
