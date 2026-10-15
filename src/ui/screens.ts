@@ -3,10 +3,15 @@ import { analyticsExport, analyticsLog, eventCounts, track } from '../analytics'
 const analyticsLogSize = () => analyticsLog().length;
 import { music } from '../audio/music';
 import { sfx } from '../audio/sfx';
-import { B, BLOCKS, wearFactor } from '../game/blocks';
-import { BIOMES, DIFFICULTY, MAX_TIER, MEGA, PRESTIGE, SHOP, TIERS, UPGRADES, WORLD_W, type Difficulty, type MegaId, type UpgradeId } from '../game/config';
+import { BLOCKS } from '../game/blocks';
+import { BIOMES, BOOST_IDS, BOOSTS, DASH_DOWN, DIFFICULTY, LOADOUT_SIZE, MAX_TIER, MEGA, PRESTIGE, SHOP, TIERS, UPGRADES, WORLD_W, type BoostId, type Difficulty, type MegaId, type UpgradeId } from '../game/config';
 import {
-  buyDynamite,
+  buyBoost,
+  buyDashDown,
+  boostCost,
+  boostOwned,
+  dashDownCost,
+  toggleLoadout,
   buyForge,
   buyMega,
   megaCost,
@@ -16,7 +21,6 @@ import {
   canPrestige,
   deriveStats,
   doPrestige,
-  dynamiteCost,
   forgeCost,
   prestigeShards,
   upgradeCost,
@@ -32,21 +36,18 @@ import {
   achievementsClaimable,
   claimAchievement,
   claimDaily,
-  claimQuest,
-  claimQuestBonus,
   collectIdle,
   dailyStatus,
-  ensureQuests,
   freeChestReady,
   idleFull,
   idlePending,
   levelReward,
   openFreeChest,
-  questBonusReady,
-  questsClaimable,
-  rerollQuest,
   rewardScale,
-  trackQuests,
+  ensureMissions,
+  missionsSkipReady,
+  progressMissions,
+  skipMission,
   xpForLevel,
   type ChestRarity,
   type Feature,
@@ -59,10 +60,10 @@ import { pushPermission, requestPush } from '../notifications';
 import { Rng } from '../game/rng';
 import { isNative, setVibration, vibrate } from '../platform';
 import type { App } from './app';
-import { $, bar, closeModal, hms, modalOpen, msToMidnight, openModal, rewardTiles, toast } from './dom';
+import { $, bar, closeModal, hms, modalOpen, openModal, rewardTiles, toast } from './dom';
 import { fmt } from './format';
-import { setLang, t } from './i18n';
-import { UPGRADE_ICON, icon } from './icons';
+import { missionText, setLang, t } from './i18n';
+import { BOOST_ICON, UPGRADE_ICON, icon } from './icons';
 
 /** Features that unlock exactly at this level. */
 function featuresAt(level: number): Feature[] {
@@ -192,11 +193,11 @@ export class Screens {
           return m !== null && s.coins >= m;
         }).length;
         const lift = nextLiftStop(s);
-        return (c !== null && s.coins >= c ? 1 : 0) + megas + (lift && s.coins >= lift.cost ? 1 : 0);
+        const dd = dashDownCost(s);
+        return (c !== null && s.coins >= c ? 1 : 0) + megas + (lift && s.coins >= lift.cost ? 1 : 0) + (dd !== null && s.coins >= dd ? 1 : 0);
       }
       case 'quests':
-        ensureQuests(s, now);
-        return (this.app.isUnlocked('quests') ? questsClaimable(s) : 0) + (this.app.isUnlocked('achievements') ? achievementsClaimable(s) : 0);
+        return this.app.isUnlocked('achievements') ? achievementsClaimable(s) : 0;
       case 'shop':
         return (this.app.isUnlocked('freeChest') && freeChestReady(s, now) ? 1 : 0) + (canPrestige(s) ? 1 : 0);
       default:
@@ -287,6 +288,7 @@ export class Screens {
       <div class="home-bottom">
         ${goalHtml}
         ${lift}
+        ${this.loadoutHtml()}
         <button class="btn lg wide pulse" data-a="play">${icon('play', 30)}<span>${t('play')}</span></button>
       </div>`,
       'home',
@@ -311,8 +313,89 @@ export class Screens {
       this.home();
     });
     this.on('[data-lift]', (el) => this.tryBuyLift(Number(el.dataset.lift), () => this.home()));
+    this.on('[data-a=loadout]', () => {
+      sfx.click();
+      this.loadoutModal();
+    });
     this.lastSideKey = this.sideKey();
     this.bindSide();
+  }
+
+  /** "Power-ups for the run": the 3 chosen slots, tap to change. */
+  private loadoutHtml(): string {
+    const s = this.s;
+    if (!this.app.isUnlocked('boosts')) return '';
+    const slots = Array.from({ length: LOADOUT_SIZE }, (_, i) => {
+      const id = s.loadout[i];
+      if (!id) return `<span class="slot empty">+</span>`;
+      const n = boostOwned(s, id);
+      return `<span class="slot ${n ? '' : 'none'}">${icon(BOOST_ICON[id], 34)}<b>${n}</b></span>`;
+    }).join('');
+    return `<button class="loadout" data-a="loadout"><span class="lbl">${t('boostsTitle')}</span><span class="slots">${slots}</span></button>`;
+  }
+
+  /** Choose up to 3 power-ups for the next run, buy more on the spot. */
+  loadoutModal(): void {
+    const s = this.s;
+    const cards = BOOST_IDS.map((id) => {
+      const on = s.loadout.includes(id);
+      const n = boostOwned(s, id);
+      const cost = boostCost(s, id);
+      const def = BOOSTS[id];
+      return `<div class="card boostcard ${on ? 'on' : ''}" data-pick="${id}">
+        <div class="ic">${icon(BOOST_ICON[id], 42)}</div>
+        <div class="info"><div class="nm">${t(`boost.${id}`)}<span class="lv">${t('boostOwned', { n })}</span></div>
+        <div class="ds">${t(`boostd.${id}`, { s: def.time ?? 0 })} · ${t('boostPerRun', { n: id === 'dynamite' ? SHOP.maxDynamitePerRun : def.perRun })}</div></div>
+        <div class="bcol"><span class="take">${on ? icon('check', 26) : t('boostTake')}</span>
+        <button class="btn sm ${s.coins >= cost ? 'gold' : 'off'}" data-bbuy="${id}">+1 ${icon('coin', 18)}<span class="${s.coins >= cost ? '' : 'price-bad'}">${fmt(cost)}</span></button></div></div>`;
+    }).join('');
+    const host = openModal(`<div class="modal panel wide-modal">
+      <div class="ribbon">${t('boostsTitle')}</div>
+      <p class="sub">${t('boostsSub', { n: LOADOUT_SIZE })}</p>
+      <div class="list">${cards}</div>
+      <button class="btn wide" data-a="ok">${t('boostsDone')}</button></div>`);
+    this.on(
+      '[data-pick]',
+      (el) => {
+        const id = el.dataset.pick as BoostId;
+        if (toggleLoadout(s, id, LOADOUT_SIZE)) {
+          sfx.click();
+          this.app.persist();
+          this.loadoutModal();
+        } else {
+          sfx.error();
+          toast(t('boostsFull', { n: LOADOUT_SIZE }));
+        }
+      },
+      host,
+    );
+    this.on(
+      '[data-bbuy]',
+      (el) => {
+        const id = el.dataset.bbuy as BoostId;
+        const cost = boostCost(s, id);
+        if (buyBoost(s, id)) {
+          s.profile.coinsSpent += cost;
+          sfx.buy();
+          track('purchase_item', { id, cost });
+          if (!s.loadout.includes(id)) toggleLoadout(s, id, LOADOUT_SIZE);
+          this.app.persist();
+          this.loadoutModal();
+          this.bumpWallet();
+        } else sfx.error();
+      },
+      host,
+    );
+    this.on(
+      '[data-a=ok]',
+      () => {
+        sfx.click();
+        closeModal();
+        if (this.app.screen === 'home') this.home();
+        else if (this.app.screen === 'shop') this.shop();
+      },
+      host,
+    );
   }
 
   private sideHtml(): string {
@@ -370,7 +453,7 @@ export class Screens {
           sfx.chest();
           vibrate('medium');
           toast(`${icon('cart', 28)}<span>${t('idle')}: +${fmt(coins)} ${icon('coin', 20)}</span>`);
-          trackQuests(this.s, { coins }, this.app.now());
+          this.app.notifyMissions(progressMissions(this.s, { coins }, false));
           track('idle_collect', { coins });
         } else sfx.click();
         this.app.persist();
@@ -411,8 +494,6 @@ export class Screens {
         }
       }
     }
-    const qt = document.getElementById('qTimer');
-    if (qt) qt.textContent = t('questsReset', { t: hms(msToMidnight(this.app.now())) });
     const fc = document.getElementById('fcTimer');
     if (fc) fc.textContent = hms(this.s.freeChestAt - this.app.now());
   }
@@ -522,7 +603,7 @@ export class Screens {
         sfx.buy();
         vibrate('light');
         s.upgradeHintDone = true;
-        this.app.notifyQuests(trackQuests(s, { upgrade: 1 }, this.app.now()));
+        this.app.notifyMissions(progressMissions(s, { upgrade: 1 }, false));
         track('purchase_upgrade', { id, level: lvl + 1, cost: upgradeCost(id, lvl) });
         this.app.persist();
         this.upgrades();
@@ -540,8 +621,6 @@ export class Screens {
     const cur = s.forgeTier;
     const tiers = TIERS.map((tr, i) => {
       const bonus = [`${icon('hammer', 18)} x${tr.dmg}`, `${icon('heart', 18)} x${tr.dur}`];
-      // better pickaxes wear less on soft blocks (wood = full wear on dirt)
-      if (i > 0) bonus.push(t('wearSoft', { n: `1/${Math.round(1 / wearFactor(B.DIRT, i))}` }));
       if (tr.coinBonus) bonus.push(`${icon('coin', 18)} +${tr.coinBonus * 100}%`);
       if (tr.fireproof) bonus.push(`${icon('fire', 18)}`);
       return `<div class="card ${i > cur ? 'dim' : ''}"><div class="ic"><img src="${this.app.pickUrl(i)}"></div>
@@ -564,12 +643,26 @@ export class Screens {
        </div>
        <h2 style="font-size:22px;margin:18px 0 4px">${t('mega')}</h2>
        <p class="sub" style="margin:0 0 10px">${t('megaDesc')}</p>
-       <div class="list">${(['size', 'width'] as MegaId[]).map((id) => this.megaCard(id)).join('')}${this.liftCard()}</div>
+       <div class="list">${(['size', 'width'] as MegaId[]).map((id) => this.megaCard(id)).join('')}${this.dashDownCard()}${this.liftCard()}</div>
        <div class="list" style="margin-top:14px">${tiers}</div>`,
       'solid',
     );
     this.bindHeader();
     this.on('[data-wlift]', (el) => this.tryBuyLift(Number(el.dataset.wlift), () => this.forge()));
+    this.on('[data-a=dashdown]', () => {
+      const before = s.coins;
+      if (buyDashDown(s)) {
+        s.profile.coinsSpent += before - s.coins;
+        sfx.tierUp();
+        vibrate('heavy');
+        track('purchase_dash_down', { level: s.dashDown, cost: before - s.coins });
+        this.app.notifyMissions(progressMissions(s, { upgrade: 1 }, false));
+        this.app.persist();
+        this.forge();
+        this.bumpWallet();
+        this.nav(true);
+      } else sfx.error();
+    });
     this.on('[data-mega]', (el) => {
       const id = el.dataset.mega as MegaId;
       const before = s.coins;
@@ -590,7 +683,7 @@ export class Screens {
         s.profile.coinsSpent += before - s.coins;
         sfx.tierUp();
         vibrate('heavy');
-        this.app.notifyQuests(trackQuests(s, { upgrade: 1 }, this.app.now()));
+        this.app.notifyMissions(progressMissions(s, { upgrade: 1 }, false));
         track('purchase_forge', { tier: s.forgeTier });
         this.app.persist();
         this.forge();
@@ -641,6 +734,23 @@ export class Screens {
       }</div>`;
   }
 
+  /** One-time purchase (then 4 more levels): the breakthrough can also go straight down. */
+  private dashDownCard(): string {
+    const s = this.s;
+    const lvl = s.dashDown;
+    const cost = dashDownCost(s);
+    const desc =
+      lvl === 0 ? t('dashDownBuy', { n: DASH_DOWN.blocks[0] }) : cost === null ? t('dashDownDesc', { n: DASH_DOWN.blocks[lvl - 1] }) : t('dashDownNext', { a: DASH_DOWN.blocks[lvl - 1], b: DASH_DOWN.blocks[lvl] });
+    const afford = cost !== null && s.coins >= cost;
+    return `<div class="card"><div class="ic">${icon('down', 40)}</div>
+      <div class="info"><div class="nm">${t('dashDown')}<span class="lv">${t('lvl')} ${lvl}</span></div><div class="ds">${desc}</div></div>
+      ${
+        cost === null
+          ? `<button class="btn sm off" disabled>${t('max')}</button>`
+          : `<button class="btn sm ${afford ? 'gold' : 'off'}" data-a="dashdown">${icon('coin', 22)}<span class="${afford ? '' : 'price-bad'}">${fmt(cost)}</span></button>`
+      }</div>`;
+  }
+
   private megaCard(id: MegaId): string {
     const s = this.s;
     const lvl = id === 'size' ? s.pickSize : s.shaftWidth;
@@ -665,34 +775,29 @@ export class Screens {
   private quests(): void {
     const s = this.s;
     const now = this.app.now();
-    const qs = ensureQuests(s, now);
+    const list = ensureMissions(s);
     const achUnlocked = this.app.isUnlocked('achievements');
     const tab = achUnlocked ? this.questTab : 'quests';
     let body: string;
     if (tab === 'quests') {
-      const cards = qs.list
-        .map((q, i) => {
-          const done = q.progress >= q.target;
-          const action = q.claimed
-            ? icon('check', 34)
-            : done
-              ? `<button class="btn sm pulse" data-claim="${i}">${t('claim')}</button>`
-              : !qs.rerolled
-                ? `<button class="btn sm ghost" data-reroll="${i}">${icon('refresh', 20)}</button>`
-                : '';
-          return `<div class="card ${q.claimed ? 'done' : ''}"><div class="ic">${icon('scroll', 36)}</div>
-            <div class="info"><div class="nm">${t(`q.${q.type}`, { n: fmt(q.target) })}</div>
-            <div style="margin-top:6px">${bar(q.progress / q.target, done ? '' : 'gold', `${fmt(q.progress)} / ${fmt(q.target)}`)}</div></div>${action}</div>`;
+      const skip = missionsSkipReady(s, now);
+      const cards = list
+        .map((m, i) => {
+          const r = m.reward;
+          const reward = [
+            r.boost ? `${icon(BOOST_ICON[r.boost], 22)}×${r.n ?? 1}` : '',
+            r.gems ? `${icon('gem', 20)}${r.gems}` : '',
+            r.coins ? `${icon('coin', 20)}${fmt(r.coins)}` : '',
+          ].filter(Boolean).join(' ');
+          return `<div class="card mission"><div class="ic">${icon('scroll', 36)}</div>
+            <div class="info"><div class="nm">${missionText(m, fmt)}</div>
+            <div style="margin-top:6px">${bar(m.progress / m.target, 'gold', `${fmt(m.scope === 'run' ? m.progress : Math.min(m.progress, m.target))} / ${fmt(m.target)}`)}</div></div>
+            <div class="mreward">${reward}${skip ? `<button class="btn sm ghost" data-skip="${i}" aria-label="${t('missionSkip')}">${icon('refresh', 18)}</button>` : ''}</div></div>`;
         })
         .join('');
-      const claimedN = qs.list.filter((q) => q.claimed).length;
-      const bonusReady = questBonusReady(s);
-      body = `<div class="sub center" id="qTimer">${t('questsReset', { t: hms(msToMidnight(now)) })}</div>
-        <div class="list" style="margin-top:10px">${cards}
-        <div class="card ${qs.bonusClaimed ? 'done' : ''}"><div class="ic">${icon('chest', 40)}</div>
-          <div class="info"><div class="nm">${t('questsBonus')}</div><div style="margin-top:6px">${bar(claimedN / 3, 'purple', `${claimedN} / 3`)}</div></div>
-          ${qs.bonusClaimed ? icon('check', 34) : `<button class="btn sm purple ${bonusReady ? 'pulse' : 'off'}" data-a="bonus" ${bonusReady ? '' : 'disabled'}>${t('open')}</button>`}
-        </div></div>`;
+      body = `<div class="sub center">${t('missionsSub')}</div>
+        <div class="list" style="margin-top:10px">${cards}</div>
+        <div class="sub center">${t('missionsDoneN', { n: s.missions.done })} · ${skip ? t('missionSkip') : t('missionSkipUsed')}</div>`;
     } else {
       body = `<div class="list">${ACHIEVEMENTS.map((a) => {
         const claimed = s.achievements[a.id] ?? 0;
@@ -709,12 +814,12 @@ export class Screens {
         </div>`;
       }).join('')}</div>`;
     }
-    const qBadge = questsClaimable(s);
+    const qBadge = 0;
     const aBadge = achUnlocked ? achievementsClaimable(s) : 0;
     this.set(
       `${this.header(t('quests'))}
        <div class="tabs">
-         <button class="tab ${tab === 'quests' ? 'on' : ''}" data-tab="quests">${t('questsTitle')}${qBadge ? `<span class="badge">${qBadge}</span>` : ''}</button>
+         <button class="tab ${tab === 'quests' ? 'on' : ''}" data-tab="quests">${t('missionsTitle')}${qBadge ? `<span class="badge">${qBadge}</span>` : ''}</button>
          <button class="tab ${tab === 'achievements' ? 'on' : ''}" data-tab="achievements">${achUnlocked ? t('achievements') : `${icon('lock', 16)} ${t('locked', { n: FEATURE_LEVEL.achievements })}`}${aBadge ? `<span class="badge">${aBadge}</span>` : ''}</button>
        </div>
        ${body}
@@ -731,26 +836,13 @@ export class Screens {
       this.questTab = el.dataset.tab as 'quests' | 'achievements';
       this.quests();
     });
-    this.on('[data-claim]', (el) => {
-      const r = claimQuest(s, Number(el.dataset.claim), this.app.now());
-      if (!r) return;
-      track('quest_claim', { type: qs.list[Number(el.dataset.claim)].type });
-      this.app.persist();
-      this.rewardModal(t('questDoneToast'), r, 'scroll');
-    });
-    this.on('[data-reroll]', (el) => {
-      if (rerollQuest(s, Number(el.dataset.reroll), this.app.now())) {
+    this.on('[data-skip]', (el) => {
+      if (skipMission(s, Number(el.dataset.skip), this.app.now())) {
         sfx.click();
+        track('mission_skip');
         this.app.persist();
         this.quests();
-      }
-    });
-    this.on('[data-a=bonus]', () => {
-      const r = claimQuestBonus(s, new Rng((Math.random() * 1e9) | 0));
-      if (!r) return;
-      track('chest_open', { source: 'quests', rarity: 'rare' });
-      this.app.persist();
-      this.chestModal('rare', r);
+      } else sfx.error();
     });
     this.on('[data-ach]', (el) => {
       const gems = claimAchievement(s, el.dataset.ach!);
@@ -791,7 +883,6 @@ export class Screens {
   private shop(): void {
     const s = this.s;
     const now = this.app.now();
-    const dc = dynamiteCost(s);
     const chestUnlocked = this.app.isUnlocked('freeChest');
     const ready = freeChestReady(s, now);
     const prestigeOpen = s.bestDepth >= PRESTIGE.unlockDepth || s.prestiges > 0;
@@ -806,8 +897,14 @@ export class Screens {
                 ${ready ? `<button class="btn sm pulse" data-a="chest">${t('open')}</button>` : `<button class="btn sm off" disabled id="fcTimer">${hms(s.freeChestAt - now)}</button>`}</div>`
              : ''
          }
-         <div class="card"><div class="ic">${icon('bomb', 40)}</div><div class="info"><div class="nm">${t('dynamite')}<span class="lv">${t('owned', { n: s.dynamite })}</span></div><div class="ds">${t('dynamiteDesc')}</div></div>
-           <button class="btn sm ${s.coins >= dc ? 'gold' : 'off'}" data-a="dyn">${icon('coin', 22)}<span class="${s.coins >= dc ? '' : 'price-bad'}">${fmt(dc)}</span></button></div>
+         ${(this.app.isUnlocked('boosts') ? BOOST_IDS : (['dynamite'] as BoostId[]))
+           .map((id) => {
+             const c = boostCost(s, id);
+             return `<div class="card"><div class="ic">${icon(BOOST_ICON[id], 40)}</div><div class="info"><div class="nm">${t(`boost.${id}`)}<span class="lv">${t('owned', { n: boostOwned(s, id) })}</span></div><div class="ds">${t(`boostd.${id}`, { s: BOOSTS[id].time ?? 0 })}</div></div>
+               <button class="btn sm ${s.coins >= c ? 'gold' : 'off'}" data-buyb="${id}">${icon('coin', 22)}<span class="${s.coins >= c ? '' : 'price-bad'}">${fmt(c)}</span></button></div>`;
+           })
+           .join('')}
+         ${this.app.isUnlocked('boosts') ? `<button class="btn blue wide" data-a="loadout">${icon('bag', 26)}<span>${t('boostsTitle')}</span></button>` : ''}
          <div class="card"><div class="ic">${icon('totem', 40)}</div><div class="info"><div class="nm">${t('totem')}<span class="lv">${t('owned', { n: s.totems })}</span></div><div class="ds">${t('totemDesc')}</div></div>
            <button class="btn sm ${s.gems >= SHOP.totemGems ? 'purple' : 'off'}" data-a="totem">${icon('gem', 22)}<span class="${s.gems >= SHOP.totemGems ? '' : 'price-bad'}">${SHOP.totemGems}</span></button></div>
        </div>
@@ -837,10 +934,16 @@ export class Screens {
         this.nav(true);
       } else sfx.error();
     };
-    this.on('[data-a=dyn]', () => {
-      const ok = buyDynamite(s);
-      if (ok) s.profile.coinsSpent += dc;
-      after(ok, 'purchase_item', { id: 'dynamite', cost: dc });
+    this.on('[data-buyb]', (el) => {
+      const id = el.dataset.buyb as BoostId;
+      const c = boostCost(s, id);
+      const ok = buyBoost(s, id);
+      if (ok) s.profile.coinsSpent += c;
+      after(ok, 'purchase_item', { id, cost: c });
+    });
+    this.on('[data-a=loadout]', () => {
+      sfx.click();
+      this.loadoutModal();
     });
     this.on('[data-a=totem]', () => {
       const ok = buyTotem(s);
@@ -1066,7 +1169,7 @@ export class Screens {
           ${rep.levelsReached.length ? `<div class="qdone" style="color:var(--gold)">${icon('star', 22)}${t('levelUpInline', { n: s.level })} +${rep.levelsReached.reduce((g, l) => g + (levelReward(s, l).gems ?? 0), 0)} ${icon('gem', 16)}</div>` : ''}
         </div>
         ${newBlocks}
-        ${rep.questsDone.length ? `<div class="panel">${rep.questsDone.map((q) => `<div class="qdone">${icon('check', 22)}${t('questDoneToast')} · ${t(`q.${q.type}`, { n: fmt(q.target) })}</div>`).join('')}</div>` : ''}
+        ${rep.missionsDone.length ? `<div class="panel">${rep.missionsDone.map((d) => `<div class="qdone">${icon('check', 22)}<span>${missionText(d.mission, fmt)}</span>${rewardTiles(d.reward, { totem: t('totem'), dynamite: t('dynamite') })}</div>`).join('')}</div>` : ''}
         ${!adUsed && r.totalCoins > 0 ? `<button class="btn gold wide" data-a="x2">${icon('ad', 30)}<span>${t('x2')}</span></button>` : ''}
         <div class="row2">
           ${
@@ -1079,7 +1182,7 @@ export class Screens {
       </div>`,
       'over',
     );
-    if (rep.questsDone.length) sfx.chest();
+    if (rep.missionsDone.length) sfx.chest();
     this.on('[data-a=x2]', async (el) => {
       (el as HTMLButtonElement).disabled = true;
       if (await this.app.doubleCoins()) {

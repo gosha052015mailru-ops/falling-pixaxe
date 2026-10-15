@@ -20,7 +20,7 @@ if (url.searchParams.has('reset')) {
 installErrorReporting();
 void (document.fonts?.ready ?? Promise.resolve()).finally(() => {
   const app = new App();
-  // Console helpers for testers: game.reset(), game.cheat({ coins, gems, level, depth, forge })
+  // Console helpers for testers: game.reset(), game.cheat({ coins, gems, level, depth, forge, down, boosts })
   const api = {
     reset: () => app.resetProgress(),
     cheat: (o?: Parameters<App['cheat']>[0]) => app.cheat(o),

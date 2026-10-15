@@ -1,4 +1,5 @@
 import { blockDef } from './blocks';
+import { BOOST_IDS } from './config';
 import type { Run } from './run';
 
 /**
@@ -21,6 +22,22 @@ export class Bot {
     if (this.sinceBreak > 1.6 && run.dynamite > 0) {
       run.useDynamite();
       this.sinceBreak = 0;
+      return;
+    }
+    // power-ups: teleport when stuck, the rest now and then
+    const ready = BOOST_IDS.filter((id) => id !== 'dynamite' && run.boostCount(id) > 0 && run.boostActive(id) <= 0);
+    if (ready.length && run.time > 3) {
+      if (this.sinceBreak > 1.2 && ready.includes('teleport')) {
+        run.useBoost('teleport');
+        return;
+      }
+      if (run.rng.chance(0.04)) {
+        run.useBoost(run.rng.pick(ready));
+        return;
+      }
+    }
+    if (run.stats.dashDownBlocks > 0 && run.nudges > 0 && run.rng.chance(0.25)) {
+      run.dash(0, run.rng.range(0.4, 1));
       return;
     }
     if (run.nudges <= 0 || run.rng.next() > this.skill) return;

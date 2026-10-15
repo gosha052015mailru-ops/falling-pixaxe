@@ -35,6 +35,8 @@ export const PHYS = {
   dashTime: [0.15, 0.5] as [number, number],
   /** Downward share of the dash direction (the rest is sideways). */
   dashDown: 0.55,
+  /** Straight-down breakthrough (bought in the Forge): faster, goes as deep as its level allows. */
+  dashDownSpeed: [10, 26] as [number, number],
   impactRef: 6,
   impactMin: 0.6,
   impactMax: 1.6,
@@ -96,13 +98,13 @@ export interface TierDef {
 
 export const TIERS: TierDef[] = [
   { key: 'wood', dmg: 1, dur: 1.0, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#b5895a', edge: '#8a6238', handle: '#6b4423' } },
-  { key: 'stone', dmg: 2, dur: 1.0, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#9a9aa2', edge: '#6e6e76', handle: '#6b4423' } },
-  { key: 'copper', dmg: 3, dur: 1.15, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#e8894a', edge: '#b25a24', handle: '#6b4423' } },
-  { key: 'iron', dmg: 5, dur: 1.45, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#e6e6ec', edge: '#a9a9b3', handle: '#6b4423' } },
-  { key: 'gold', dmg: 8, dur: 1.1, coinBonus: 0.25, critBonus: 0, fireproof: false, colors: { head: '#ffd23f', edge: '#e59a10', handle: '#6b4423' } },
-  { key: 'diamond', dmg: 12, dur: 1.6, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#6ff3f0', edge: '#2ab7c4', handle: '#6b4423' } },
-  { key: 'obsidian', dmg: 20, dur: 1.85, coinBonus: 0, critBonus: 0, fireproof: true, colors: { head: '#5b2d8a', edge: '#2a1240', handle: '#3a2a1a' } },
-  { key: 'star', dmg: 35, dur: 2.1, coinBonus: 0.25, critBonus: 0.1, fireproof: true, colors: { head: '#fff7a8', edge: '#ff7ad9', handle: '#4a3aa8' } },
+  { key: 'stone', dmg: 2, dur: 1.3, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#9a9aa2', edge: '#6e6e76', handle: '#6b4423' } },
+  { key: 'copper', dmg: 3, dur: 1.7, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#e8894a', edge: '#b25a24', handle: '#6b4423' } },
+  { key: 'iron', dmg: 5, dur: 2.2, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#e6e6ec', edge: '#a9a9b3', handle: '#6b4423' } },
+  { key: 'gold', dmg: 8, dur: 2.8, coinBonus: 0.25, critBonus: 0, fireproof: false, colors: { head: '#ffd23f', edge: '#e59a10', handle: '#6b4423' } },
+  { key: 'diamond', dmg: 12, dur: 3.6, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#6ff3f0', edge: '#2ab7c4', handle: '#6b4423' } },
+  { key: 'obsidian', dmg: 20, dur: 4.6, coinBonus: 0, critBonus: 0, fireproof: true, colors: { head: '#5b2d8a', edge: '#2a1240', handle: '#3a2a1a' } },
+  { key: 'star', dmg: 35, dur: 6.0, coinBonus: 0.25, critBonus: 0.1, fireproof: true, colors: { head: '#fff7a8', edge: '#ff7ad9', handle: '#4a3aa8' } },
 ];
 export const MAX_TIER = TIERS.length - 1;
 
@@ -152,11 +154,47 @@ export const SHOP = {
  */
 export const MEGA = {
   /** Pickaxe size: each hit also strikes this many extra blocks in the same row. */
-  size: { costs: [2000, 36000, 340000, 3000000, 22000000], max: 5 },
+  size: { costs: [3500, 70000, 650000, 5500000, 40000000], max: 5 },
   /** Shaft width: +2 columns per level. */
-  width: { costs: [1700, 32000, 300000, 2600000, 19000000], max: 5, step: 2 },
+  width: { costs: [1200, 22000, 200000, 1800000, 13000000], max: 5, step: 2 },
 };
 export type MegaId = keyof typeof MEGA;
+
+/**
+ * Breakthrough DOWN: a one-time 100 000 unlock, then levels that let one dash smash
+ * deeper — up to 20 blocks at the last (very expensive) level.
+ */
+export const DASH_DOWN = {
+  costs: [100000, 450000, 1600000, 5500000, 20000000],
+  blocks: [6, 9, 12, 16, 20],
+};
+
+/**
+ * Power-ups ("бонусы"): bought with coins, earned from missions; up to 3 kinds are taken
+ * into a run (loadout), each with a per-run cap. Price = rewardScale × price (always ~a
+ * fraction of one run's income, see GAME_DESIGN §6.12).
+ */
+export type BoostId = 'dynamite' | 'giant' | 'twin' | 'teleport' | 'shield';
+export const BOOST_IDS: BoostId[] = ['dynamite', 'giant', 'twin', 'teleport', 'shield'];
+export const BOOSTS: Record<BoostId, { price: number; perRun: number; time?: number }> = {
+  dynamite: { price: 0, perRun: 5 },
+  /** Giant pickaxe: bigger, ×2.5 damage, hits 2 more blocks per strike. */
+  giant: { price: 0.6, perRun: 2, time: 7 },
+  /** Twin: two ghost pickaxes split off and mine on their own. */
+  twin: { price: 0.8, perRun: 2, time: 8 },
+  /** Teleport: blink straight down through the rock. */
+  teleport: { price: 0.7, perRun: 2 },
+  /** Shield: no durability loss at all. */
+  shield: { price: 0.6, perRun: 2, time: 8 },
+};
+export const LOADOUT_SIZE = 3;
+export const BOOST_FX = {
+  giantDamage: 2.5,
+  giantSwing: 2,
+  giantRadius: 1.7,
+  twinCount: 2,
+  teleportBlocks: [10, 16] as [number, number],
+};
 
 /** Fast-forward unlocks during a run: [seconds of falling, speed]. */
 export const FAST_FORWARD: [number, number][] = [

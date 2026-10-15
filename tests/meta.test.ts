@@ -7,16 +7,14 @@ import {
   addXp,
   claimAchievement,
   claimDaily,
-  claimQuest,
-  claimQuestBonus,
   collectIdle,
   dailyStatus,
-  ensureQuests,
+  ensureMissions,
   idlePending,
   openFreeChest,
-  rerollQuest,
+  progressMissions,
+  skipMission,
   rewardScale,
-  trackQuests,
   unlocked,
   xpForLevel,
 } from '../src/game/meta';
@@ -66,29 +64,43 @@ describe('daily rewards', () => {
   });
 });
 
-describe('quests', () => {
-  it('creates 3 daily quests, tracks and pays them', () => {
+describe('missions', () => {
+  it('keeps 3 different missions, pays and replaces finished ones', () => {
     const s = newSave();
-    s.level = 3;
-    const qs = ensureQuests(s, T0);
-    expect(qs.list).toHaveLength(3);
-    const types = new Set(qs.list.map((q) => q.type));
-    expect(types.size).toBe(3);
-    const huge = { blocks: 1e6, depth: 1e6, tnt: 1e6, chests: 1e6, combo: 1e6, tierUps: 1e6, ores: 1e6, runs: 1e6, dynamite: 1e6, upgrade: 1e6, coins: 1e9 };
-    expect(trackQuests(s, huge, T0)).toHaveLength(3);
-    const coins = s.coins;
-    for (let i = 0; i < 3; i++) expect(claimQuest(s, i, T0)).not.toBeNull();
-    expect(s.coins).toBeGreaterThan(coins);
-    expect(claimQuestBonus(s, new Rng(3))).not.toBeNull();
-    expect(claimQuestBonus(s, new Rng(3))).toBeNull();
+    const list = ensureMissions(s);
+    expect(list).toHaveLength(3);
+    expect(new Set(list.map((m) => `${m.scope}:${m.type}`)).size).toBe(3);
+    const huge: Record<string, number> = {};
+    for (const m of list) huge[m.type] = 1e9;
+    const before = { coins: s.coins, gems: s.gems, dyn: s.dynamite };
+    const done = progressMissions(s, huge, true);
+    expect(done).toHaveLength(3);
+    expect(s.missions.done).toBe(3);
+    expect(s.missions.list).toHaveLength(3);
+    expect(s.coins + s.gems + s.dynamite).toBeGreaterThan(before.coins + before.gems + before.dyn);
   });
-  it('allows one reroll per day and refreshes next day', () => {
+  it('run-scoped missions ignore menu progress; total ones sum up', () => {
     const s = newSave();
-    ensureQuests(s, T0);
-    expect(rerollQuest(s, 0, T0)).toBe(true);
-    expect(rerollQuest(s, 1, T0)).toBe(false);
-    ensureQuests(s, T0 + DAY);
-    expect(s.quests.rerolled).toBe(false);
+    s.missions.list = [
+      { type: 'blocks', scope: 'run', target: 10, progress: 0, reward: { gems: 1 } },
+      { type: 'upgrade', scope: 'total', target: 2, progress: 0, reward: { gems: 1 } },
+    ];
+    progressMissions(s, { blocks: 50, upgrade: 1 }, false);
+    expect(s.missions.list[0].progress).toBe(0);
+    expect(s.missions.list[1].progress).toBe(1);
+    expect(progressMissions(s, { upgrade: 1 }, false)).toHaveLength(1);
+  });
+  it('get harder as more are done (3 per run early, ~1 or less later)', async () => {
+    const { missionRuns } = await import('../src/game/meta');
+    expect(missionRuns(0)).toBeLessThan(0.5);
+    expect(missionRuns(100)).toBeGreaterThan(3);
+  });
+  it('one free swap per day', () => {
+    const s = newSave();
+    ensureMissions(s);
+    expect(skipMission(s, 0, T0)).toBe(true);
+    expect(skipMission(s, 1, T0)).toBe(false);
+    expect(skipMission(s, 1, T0 + DAY)).toBe(true);
   });
 });
 

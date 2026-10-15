@@ -212,25 +212,94 @@ describe('mine events', () => {
   });
 });
 
-describe('tier-based wear', () => {
-  it('a better pickaxe wears less on softer blocks, never more than 1', async () => {
-    const { wearFactor, B: Blocks } = await import('../src/game/blocks');
-    expect(wearFactor(Blocks.DIRT, 0)).toBe(1);
-    expect(wearFactor(Blocks.DIRT, 1)).toBe(0.5);
-    expect(wearFactor(Blocks.DIRT, 4)).toBe(1 / 16);
-    expect(wearFactor(Blocks.STONE, 1)).toBe(1);
-    expect(wearFactor(Blocks.OBSIDIAN, 2)).toBe(1);
-    expect(wearFactor(Blocks.DIRT, 7)).toBeGreaterThanOrEqual(0.05);
+describe('durability: tiers grow max HP, hard rock costs more', () => {
+  it('tier max durability grows every step and hits always cost whole points', async () => {
+    const { TIERS } = await import('../src/game/config');
+    const { BLOCKS } = await import('../src/game/blocks');
+    for (let i = 1; i < TIERS.length; i++) expect(TIERS[i].dur).toBeGreaterThan(TIERS[i - 1].dur);
+    expect(TIERS[TIERS.length - 1].dur).toBeGreaterThanOrEqual(5);
+    for (const b of BLOCKS) if (b) expect(Number.isInteger(b.durCost)).toBe(true);
+    expect(BLOCKS[B.DIRT].durCost).toBe(1);
+    expect(BLOCKS[B.VOIDSTONE].durCost).toBeGreaterThan(BLOCKS[B.STONE].durCost);
   });
-  it('a golden pickaxe barely loses durability chopping dirt', () => {
+  it('a top pickaxe shrugs off a long dirt stretch', () => {
     const s = newSave();
-    s.forgeTier = 4;
+    s.forgeTier = 7;
     const run = new Run({ seed: 3, stats: deriveStats(s), bestDepth: 0, milestones: [] });
-    for (let y = 0; y < 40; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, B.DIRT);
-    const before = run.durability;
-    for (let i = 0; i < 120 * 3 && !run.over; i++) run.step(1 / 120);
+    for (let y = 0; y < 60; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, B.DIRT);
+    for (let i = 0; i < 120 * 4 && !run.over; i++) run.step(1 / 120);
     expect(run.blocks).toBeGreaterThan(5);
-    expect(before - run.durability).toBeLessThan(run.blocks * 0.1);
+    expect(run.durability).toBeGreaterThan(run.maxDur * 0.8);
+  });
+});
+
+describe('breakthrough down', () => {
+  it('needs the purchase, then drills straight down', () => {
+    const s = newSave();
+    const mk = () => {
+      const run = new Run({ seed: 6, stats: deriveStats(s), bestDepth: 0, milestones: [] });
+      for (let y = 0; y < 60; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, y < 6 ? B.AIR : B.STONE);
+      run.x = 4.5;
+      run.y = 5.5;
+      run.vx = 0;
+      run.vy = 0;
+      return run;
+    };
+    expect(mk().dash(0, 1)).toBe(false);
+    s.dashDown = 5;
+    const run = mk();
+    const y0 = run.y;
+    expect(run.dash(0, 1)).toBe(true);
+    for (let i = 0; i < 240 && run.dashing; i++) run.step(1 / 120);
+    expect(run.y - y0).toBeGreaterThan(12);
+    expect(Math.abs(run.x - 4.5)).toBeLessThan(1);
+  });
+});
+
+describe('power-ups', () => {
+  const mk = (loadout: string[]) => {
+    const s = newSave();
+    s.boosts = { giant: 2, twin: 2, teleport: 2, shield: 2 };
+    s.loadout = loadout as typeof s.loadout;
+    const run = new Run({ seed: 9, stats: deriveStats(s), bestDepth: 0, milestones: [] });
+    for (let y = 0; y < 80; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, y < 6 ? B.AIR : B.STONE);
+    run.step(1 / 120);
+    return run;
+  };
+  it('only the chosen ones come along', () => {
+    const run = mk(['giant', 'shield']);
+    expect(run.boostCount('giant')).toBe(2);
+    expect(run.boostCount('twin')).toBe(0);
+    expect(run.boostCount('dynamite')).toBe(0);
+  });
+  it('giant hits harder, shield blocks wear, teleport jumps down, twins spawn', () => {
+    const run = mk(['giant', 'shield', 'teleport']);
+    const dmg = run.damagePerHit;
+    expect(run.useBoost('giant')).toBe(true);
+    expect(run.damagePerHit).toBeGreaterThan(dmg * 2);
+    expect(run.useBoost('giant')).toBe(false); // already running
+    expect(run.useBoost('shield')).toBe(true);
+    const d0 = run.durability;
+    for (let i = 0; i < 120 * 2; i++) run.step(1 / 120);
+    expect(run.durability).toBe(d0);
+    const y0 = run.y;
+    expect(run.useBoost('teleport')).toBe(true);
+    expect(run.y - y0).toBeGreaterThanOrEqual(9);
+    const tw = mk(['twin']);
+    expect(tw.useBoost('twin')).toBe(true);
+    expect(tw.twins.length).toBe(2);
+    expect(tw.result().boostsUsed.twin).toBe(1);
+  });
+  it('used power-ups are taken from the stock', async () => {
+    const { applyResult } = await import('../src/game/progress');
+    const s = newSave();
+    s.boosts = { giant: 3, twin: 0, teleport: 0, shield: 0 };
+    s.loadout = ['giant'];
+    const run = new Run({ seed: 9, stats: deriveStats(s), bestDepth: 0, milestones: [] });
+    run.step(1 / 120);
+    run.useBoost('giant');
+    applyResult(s, run.result());
+    expect(s.boosts.giant).toBe(2);
   });
 });
 

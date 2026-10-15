@@ -1,5 +1,9 @@
-import { B, blockDef, wearFactor } from './blocks';
+import { B, blockDef } from './blocks';
 import {
+  BOOST_FX,
+  BOOSTS,
+  type BoostId,
+  CAMPAIGN_DEPTH,
   MINE_EVENTS,
   type MineEventId,
   BIOMES,
@@ -17,7 +21,17 @@ import { Rng } from './rng';
 import { World, blockHp } from './world';
 
 export type ChestLoot = 'coins' | 'gems' | 'dynamite' | 'durability';
-export type BreakCause = 'pick' | 'blast';
+export type BreakCause = 'pick' | 'blast' | 'twin';
+
+/** A ghost pickaxe split off by the Twin power-up: mines on its own, never wears. */
+export interface Twin {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  life: number;
+}
 
 export type GameEvent =
   | { t: 'hit'; x: number; y: number; id: B; dmg: number; crit: boolean; frac: number; speed: number }
@@ -44,7 +58,11 @@ export type GameEvent =
   | { t: 'fever' }
   | { t: 'revive' }
   | { t: 'stuck' }
-  | { t: 'event'; id: MineEventId };
+  | { t: 'event'; id: MineEventId }
+  | { t: 'boost'; id: BoostId; x: number; y: number }
+  | { t: 'teleport'; x0: number; y0: number; x: number; y: number; dist: number }
+  | { t: 'boostEnd'; id: BoostId }
+  | { t: 'twinPoof'; x: number; y: number };
 
 export interface RunInit {
   seed: number;
@@ -83,6 +101,16 @@ export interface RunResult {
   ores: number;
   fevers: number;
   events: number;
+  /** Mission metrics. */
+  dashes: number;
+  dashBlocks: number;
+  bestDash: number;
+  heals: number;
+  enchantsGot: number;
+  slimes: number;
+  crits: number;
+  oreCounts: Record<string, number>;
+  boostsUsed: Partial<Record<BoostId, number>>;
 }
 
 interface PendingBlast {
@@ -150,6 +178,22 @@ export class Run {
   tierUps = 0;
   oreCount = 0;
   fevers = 0;
+  dashes = 0;
+  dashBlocks = 0;
+  bestDash = 0;
+  healCount = 0;
+  enchantsGot = 0;
+  slimes = 0;
+  crits = 0;
+  oreCounts: Record<string, number> = {};
+
+  /** Power-ups brought into this run (dynamite lives in `dynamite`). */
+  boosts: Partial<Record<BoostId, number>> = {};
+  boostsUsed: Partial<Record<BoostId, number>> = {};
+  giantTimer = 0;
+  shieldTimer = 0;
+  twinTimer = 0;
+  twins: Twin[] = [];
   private bouncesSinceBreak = 0;
 
   events: GameEvent[] = [];
@@ -173,6 +217,7 @@ export class Run {
     this.nudges = init.stats.nudgeCharges;
     this.dynamite = init.stats.dynamite;
     this.totems = init.stats.totems;
+    this.boosts = { ...(init.stats.boosts ?? {}) };
     if (init.tutorial) this.setupTutorial();
     this.eventGoal = this.rollEventGoal();
   }
@@ -306,7 +351,12 @@ export class Run {
   }
 
   get damagePerHit(): number {
-    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency) * (this.fever ? RUN.feverDamage : 1) * (this.superTimer > 0 ? MINE_EVENTS.superDamage : 1);
+    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency) * (this.fever ? RUN.feverDamage : 1) * (this.superTimer > 0 ? MINE_EVENTS.superDamage : 1) * (this.giantTimer > 0 ? BOOST_FX.giantDamage : 1);
+  }
+
+  /** Collision radius (the Giant power-up makes the pickaxe bigger). */
+  get radius(): number {
+    return PHYS.radius * (this.giantTimer > 0 ? BOOST_FX.giantRadius : 1);
   }
 
   private computeMaxDur(tier: number): number {
@@ -342,25 +392,40 @@ export class Run {
     return true;
   }
 
-  /** Breakthrough dash: power 0..1 (from hold time). Uses one charge, costs no durability. */
-  dash(dir: -1 | 1, power: number): boolean {
-    if (this.hold) return this.nudge(dir);
+  /**
+   * Breakthrough dash: power 0..1 (from hold time). Uses one charge, costs no durability.
+   * dir 0 = straight down (needs the Forge unlock; reaches up to stats.dashDownBlocks).
+   */
+  dash(dir: -1 | 0 | 1, power: number): boolean {
+    if (this.hold) return this.nudge(dir === 0 ? 1 : dir);
     if (this.over || this.nudges <= 0) return false;
+    if (dir === 0 && this.stats.dashDownBlocks <= 0) return false;
     this.nudges--;
+    this.dashes++;
     const p = Math.max(0, Math.min(1, power));
     const lerp = (r: [number, number]) => r[0] + (r[1] - r[0]) * p;
-    const speed = lerp(PHYS.dashSpeed);
-    const down = PHYS.dashDown;
-    const side = Math.sqrt(1 - down * down);
-    this.dashVx = dir * side * speed;
-    this.dashVy = down * speed;
-    this.dashLeft = Math.round(lerp(PHYS.dashBlocks));
-    this.dashTimer = lerp(PHYS.dashTime);
+    if (dir === 0) {
+      const speed = lerp(PHYS.dashDownSpeed);
+      this.dashVx = 0;
+      this.dashVy = speed;
+      this.dashLeft = Math.round(1 + (this.stats.dashDownBlocks - 1) * p);
+      this.dashTimer = (this.dashLeft + 1.5) / speed + 0.05;
+      // line up with the column so the rush goes straight through it
+      this.x = Math.floor(this.x) + 0.5;
+    } else {
+      const speed = lerp(PHYS.dashSpeed);
+      const down = PHYS.dashDown;
+      const side = Math.sqrt(1 - down * down);
+      this.dashVx = dir * side * speed;
+      this.dashVy = down * speed;
+      this.dashLeft = Math.round(lerp(PHYS.dashBlocks));
+      this.dashTimer = lerp(PHYS.dashTime);
+    }
     this.dashDamage = this.damagePerHit * lerp(PHYS.dashDamage);
     this.dashBroken = 0;
     this.vx = this.dashVx;
     this.vy = this.dashVy;
-    this.angVel = dir * (14 + 16 * p);
+    this.angVel = (dir || 1) * (14 + 16 * p);
     this.emit({ t: 'dash', dir, power: p, blocks: this.dashLeft });
     return true;
   }
@@ -385,13 +450,75 @@ export class Run {
     this.dashGrace = 0.15;
     this.vx *= 0.35;
     this.vy = Math.max(this.vy * 0.5, 2.5);
+    this.dashBlocks += this.dashBroken;
+    this.bestDash = Math.max(this.bestDash, this.dashBroken);
     this.emit({ t: 'dashEnd', broken: this.dashBroken });
+  }
+
+  boostCount(id: BoostId): number {
+    return id === 'dynamite' ? this.dynamite : this.boosts[id] ?? 0;
+  }
+
+  /** Is this power-up still running (for the HUD)? */
+  boostActive(id: BoostId): number {
+    return id === 'giant' ? this.giantTimer : id === 'shield' ? this.shieldTimer : id === 'twin' ? this.twinTimer : 0;
+  }
+
+  useBoost(id: BoostId): boolean {
+    if (id === 'dynamite') return this.useDynamite();
+    if (this.over || this.hold || (this.boosts[id] ?? 0) <= 0 || this.boostActive(id) > 0) return false;
+    this.boosts[id]!--;
+    this.boostsUsed[id] = (this.boostsUsed[id] ?? 0) + 1;
+    const time = BOOSTS[id].time ?? 0;
+    this.emit({ t: 'boost', id, x: this.x, y: this.y });
+    switch (id) {
+      case 'giant':
+        this.giantTimer = time;
+        this.slow(0.35, 0.4);
+        break;
+      case 'shield':
+        this.shieldTimer = time;
+        break;
+      case 'twin':
+        this.twinTimer = time;
+        this.twins = [];
+        for (let i = 0; i < BOOST_FX.twinCount; i++) {
+          const side = i % 2 === 0 ? -1 : 1;
+          this.twins.push({ x: this.x, y: this.y - 0.2, vx: side * this.rng.range(4, 6), vy: -3, angle: this.angle, life: time });
+        }
+        break;
+      case 'teleport':
+        this.teleport();
+        break;
+    }
+    return true;
+  }
+
+  /** Blink straight down through the rock; the landing spot is carved out. */
+  private teleport(): void {
+    const x0 = this.x;
+    const y0 = this.y;
+    const dist = this.rng.int(BOOST_FX.teleportBlocks[0], BOOST_FX.teleportBlocks[1]);
+    const ty = Math.min(CAMPAIGN_DEPTH - 3, Math.floor(this.y) + dist);
+    const tx = Math.floor(this.x);
+    for (let y = ty - 1; y <= ty; y++) {
+      const id = this.world.get(tx, y);
+      if (id !== B.CORE && !this.world.isWall(tx)) this.world.set(tx, y, B.AIR);
+    }
+    this.x = tx + 0.5;
+    this.y = ty + 0.5;
+    this.vx = 0;
+    this.vy = 2;
+    this.endDash();
+    this.slow(0.5, 0.35);
+    this.emit({ t: 'teleport', x0, y0, x: this.x, y: this.y, dist: ty - Math.floor(y0) });
   }
 
   useDynamite(): boolean {
     if (this.over || this.hold || this.dynamite <= 0) return false;
     this.dynamite--;
     this.dynamiteUsed++;
+    this.boostsUsed.dynamite = (this.boostsUsed.dynamite ?? 0) + 1;
     this.emit({ t: 'dynamite' });
     this.explode(this.x, this.y + 0.9, this.stats.blastRadius, 0);
     return true;
@@ -422,6 +549,9 @@ export class Run {
     if (this.dashGrace > 0) this.dashGrace -= dt;
     if (this.goldTimer > 0) this.goldTimer -= dt;
     if (this.superTimer > 0) this.superTimer -= dt;
+    if (this.giantTimer > 0 && (this.giantTimer -= dt) <= 0) this.emit({ t: 'boostEnd', id: 'giant' });
+    if (this.shieldTimer > 0 && (this.shieldTimer -= dt) <= 0) this.emit({ t: 'boostEnd', id: 'shield' });
+    if (this.twinTimer > 0) this.twinTimer -= dt;
     if (this.nudges < this.stats.nudgeCharges) {
       this.nudgeTimer += dt;
       if (this.nudgeTimer >= this.stats.nudgeRegen) {
@@ -438,6 +568,7 @@ export class Run {
     const steps = Math.max(1, Math.ceil((speed * dt) / PHYS.maxStep));
     const h = dt / steps;
     for (let i = 0; i < steps && !this.over; i++) this.substep(h);
+    if (this.twins.length) this.updateTwins(dt);
 
     this.angle += this.angVel * dt;
     this.angVel *= Math.exp(-0.8 * dt);
@@ -478,30 +609,33 @@ export class Run {
     }
   }
 
-  private findContact(): { cx: number; cy: number; nx: number; ny: number; pen: number } | null {
-    const r = PHYS.radius;
+  private findContact(
+    bx = this.x,
+    by = this.y,
+    r = this.radius,
+  ): { cx: number; cy: number; nx: number; ny: number; pen: number } | null {
     let best: { cx: number; cy: number; nx: number; ny: number; pen: number } | null = null;
-    const x0 = Math.floor(this.x - r);
-    const x1 = Math.floor(this.x + r);
-    const y0 = Math.floor(this.y - r);
-    const y1 = Math.floor(this.y + r);
+    const x0 = Math.floor(bx - r);
+    const x1 = Math.floor(bx + r);
+    const y0 = Math.floor(by - r);
+    const y1 = Math.floor(by + r);
     for (let cy = y0; cy <= y1; cy++) {
       for (let cx = x0; cx <= x1; cx++) {
         const id = this.world.get(cx, cy);
         if (!blockDef(id).solid) continue;
-        const px = Math.max(cx, Math.min(this.x, cx + 1));
-        const py = Math.max(cy, Math.min(this.y, cy + 1));
-        let dx = this.x - px;
-        let dy = this.y - py;
+        const px = Math.max(cx, Math.min(bx, cx + 1));
+        const py = Math.max(cy, Math.min(by, cy + 1));
+        let dx = bx - px;
+        let dy = by - py;
         let dist = Math.hypot(dx, dy);
         if (dist >= r) continue;
         let pen: number;
         if (dist < 1e-6) {
           // centre is inside the block: push out along the shortest axis
-          const left = this.x - cx;
-          const right = cx + 1 - this.x;
-          const top = this.y - cy;
-          const bottom = cy + 1 - this.y;
+          const left = bx - cx;
+          const right = cx + 1 - bx;
+          const top = by - cy;
+          const bottom = cy + 1 - by;
           const m = Math.min(left, right, top, bottom);
           if (m === top) [dx, dy] = [0, -1];
           else if (m === bottom) [dx, dy] = [0, 1];
@@ -561,6 +695,7 @@ export class Run {
       this.reflect(nx, ny, vn, 1);
       if (ny < -0.5) this.vy = Math.min(this.vy, -16);
       this.vx += this.rng.sign() * this.rng.range(2, 5);
+      this.slimes++;
       this.emit({ t: 'slime', x: cx + 0.5, y: cy + 0.5 });
       if (this.world.damage(cx, cy, 1)) this.breakBlock(cx, cy, 'pick', false);
       return;
@@ -577,6 +712,7 @@ export class Run {
     const impact = Math.max(PHYS.impactMin, Math.min(PHYS.impactMax, PHYS.impactMin + 0.45 * (vn / PHYS.impactRef)));
     const critChance = this.stats.critChance + TIERS[this.tier].critBonus;
     const crit = this.rng.chance(critChance);
+    if (crit) this.crits++;
     const cell = `${cx},${cy}`;
     this.focus = cell === this.focusCell ? Math.min(PHYS.focusMax, this.focus + 1) : 0;
     this.focusCell = cell;
@@ -585,7 +721,7 @@ export class Run {
     const before = this.world.hpAt(cx, cy);
 
     // a better pickaxe wears less on softer blocks
-    this.spendDurability(def.durCost * wearFactor(id, this.tier));
+    this.spendDurability(def.durCost);
 
     this.sideSwing(cx, cy, dmg);
 
@@ -612,7 +748,7 @@ export class Run {
 
   /** Bigger pickaxe: the same hit also strikes the nearest blocks in this row. */
   private sideSwing(cx: number, cy: number, dmg: number): void {
-    const n = this.stats.pickSize;
+    const n = this.stats.pickSize + (this.giantTimer > 0 ? BOOST_FX.giantSwing : 0);
     if (n <= 0) return;
     const cells: number[] = [];
     for (let d = 1; d <= n + 1 && cells.length < n; d++) {
@@ -637,7 +773,7 @@ export class Run {
   }
 
   private spendDurability(cost: number): void {
-    if (cost <= 0 || this.dashGrace > 0) return;
+    if (cost <= 0 || this.dashGrace > 0 || this.shieldTimer > 0) return;
     const save = Math.min(0.75, 0.25 * this.enchants.unbreaking);
     if (save > 0 && this.rng.chance(save)) return;
     this.durability -= cost;
@@ -697,7 +833,10 @@ export class Run {
       this.emit({ t: 'fever' });
     }
     this.bouncesSinceBreak = 0;
-    if (def.ore) this.oreCount++;
+    if (def.ore) {
+      this.oreCount++;
+      this.oreCounts[def.key] = (this.oreCounts[def.key] ?? 0) + 1;
+    }
     if (this.eventGoal > 0 && ++this.eventProgress >= this.eventGoal) this.fireEvent(x, y);
 
     const coins = this.blockValue(id, y) * this.comboMult;
@@ -740,6 +879,7 @@ export class Run {
         const heal = this.init.tutorial ? this.maxDur : Math.round(this.maxDur * RUN.anvilHeal * this.healFactor());
         const amount = Math.min(this.maxDur - this.durability, heal);
         this.durability += amount;
+        this.healCount++;
         this.emit({ t: 'heal', amount });
         break;
       }
@@ -759,6 +899,7 @@ export class Run {
         const pool = ENCHANTS.filter((e) => !(e === 'fireproof' && (this.enchants.fireproof > 0 || TIERS[this.tier].fireproof)));
         const id = this.rng.pick(pool);
         this.enchants[id]++;
+        this.enchantsGot++;
         this.slow(0.4, 0.4);
         this.emit({ t: 'enchant', id });
         break;
@@ -868,6 +1009,51 @@ export class Run {
     this.hitstop = Math.max(this.hitstop, 0.04);
   }
 
+  // ───────────────────────── twin ghosts ─────────────────────────
+
+  private updateTwins(dt: number): void {
+    const r = PHYS.radius;
+    for (const g of this.twins) {
+      g.life -= dt;
+      const steps = Math.max(1, Math.ceil((Math.hypot(g.vx, g.vy) * dt) / PHYS.maxStep));
+      const h = dt / steps;
+      for (let i = 0; i < steps; i++) {
+        g.vy = Math.min(g.vy + PHYS.gravity * h, this.maxFall);
+        g.vx *= Math.exp(-PHYS.airDragX * 0.5 * h);
+        g.x += g.vx * h;
+        g.y += g.vy * h;
+        const c = this.findContact(g.x, g.y, r);
+        if (!c) continue;
+        const vn = -(g.vx * c.nx + g.vy * c.ny);
+        const def = blockDef(this.world.get(c.cx, c.cy));
+        const breakable = !this.world.isWall(c.cx) && def.special !== 'slime' && (def.special || Number.isFinite(def.hp));
+        if (breakable && vn > 0.05 && (def.special || this.world.damage(c.cx, c.cy, this.damagePerHit * 1.2))) {
+          this.breakBlock(c.cx, c.cy, 'twin', false);
+          g.vx *= PHYS.breakKeep;
+          g.vy *= PHYS.breakKeep;
+          continue;
+        }
+        g.x += c.nx * c.pen;
+        g.y += c.ny * c.pen;
+        if (vn > 0.05) {
+          g.vx += (1 + 0.4) * vn * c.nx;
+          g.vy += (1 + 0.4) * vn * c.ny;
+          if (c.ny < -0.5) {
+            g.vy = Math.min(g.vy, -PHYS.minBounce);
+            g.vx += this.rng.sign() * this.rng.range(0.5, 2.5);
+          }
+        }
+      }
+      g.angle += (g.vx >= 0 ? 1 : -1) * 10 * dt;
+      // a ghost that drifts too far from the real pickaxe fades out early
+      if (Math.abs(g.y - this.y) > 14) g.life = 0;
+    }
+    for (const g of this.twins) if (g.life <= 0) this.emit({ t: 'twinPoof', x: g.x, y: g.y });
+    this.twins = this.twins.filter((g) => g.life > 0);
+    if (!this.twins.length && this.twinTimer > 0) this.twinTimer = 0;
+    if (!this.twins.length) this.emit({ t: 'boostEnd', id: 'twin' });
+  }
+
   // ───────────────────────── environment ─────────────────────────
 
   private updateLava(dt: number): void {
@@ -877,7 +1063,7 @@ export class Run {
       this.lavaTimer = 0;
       return;
     }
-    if (TIERS[this.tier].fireproof || this.enchants.fireproof > 0) return;
+    if (TIERS[this.tier].fireproof || this.enchants.fireproof > 0 || this.shieldTimer > 0) return;
     this.lavaTimer += dt;
     if (this.lavaTimer >= RUN.lavaTick) {
       this.lavaTimer = 0;
@@ -931,6 +1117,15 @@ export class Run {
       ores: this.oreCount,
       fevers: this.fevers,
       events: this.eventsFired,
+      dashes: this.dashes,
+      dashBlocks: this.dashBlocks,
+      bestDash: this.bestDash,
+      heals: this.healCount,
+      enchantsGot: this.enchantsGot,
+      slimes: this.slimes,
+      crits: this.crits,
+      oreCounts: { ...this.oreCounts },
+      boostsUsed: { ...this.boostsUsed },
     };
   }
 

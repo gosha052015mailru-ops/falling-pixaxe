@@ -1,4 +1,4 @@
-import { UPGRADES, type UpgradeId } from './config';
+import { UPGRADES, type BoostId, type UpgradeId } from './config';
 import { freshProfile, type Profile } from './profile';
 
 export const SAVE_VERSION = 2;
@@ -14,6 +14,8 @@ export interface Settings {
   /** 'groove' = upbeat (default), 'calm' = ambient. */
   musicStyle: 'groove' | 'calm';
   notifications: boolean;
+  /** In-run power-up panel expanded (true) or folded into one button. */
+  boostsOpen: boolean;
 }
 
 export interface LifetimeStats {
@@ -32,6 +34,27 @@ export interface Quest {
   target: number;
   progress: number;
   claimed: boolean;
+}
+
+/** A mission from the endless pool (see meta.ts). */
+export interface Mission {
+  /** Template key, e.g. 'blocks' or 'ore:iron'. */
+  type: string;
+  /** 'run' = in a single run, 'total' = summed over runs. */
+  scope: 'run' | 'total';
+  target: number;
+  progress: number;
+  reward: { coins?: number; gems?: number; boost?: BoostId; n?: number };
+}
+
+export interface MissionState {
+  list: Mission[];
+  /** Missions completed so far: drives difficulty (3 per run early → ~0–1 later). */
+  done: number;
+  /** Running per-run averages of each metric (targets are built from them). */
+  avg: Record<string, number>;
+  /** Day of the last free skip. */
+  skipDay: string;
 }
 
 export interface QuestState {
@@ -99,6 +122,19 @@ export interface SaveData {
   hintEventsDone: boolean;
   /** The soft "may we remind you?" question was shown (never nag twice). */
   pushAsked: boolean;
+  /** Breakthrough-down level (0 = not bought). */
+  dashDown: number;
+  /** Power-ups owned (dynamite is kept in `dynamite`). */
+  boosts: Record<Exclude<BoostId, 'dynamite'>, number>;
+  /** Power-ups taken into the next run (max 3). */
+  loadout: BoostId[];
+  missions: MissionState;
+  hintDownDone: boolean;
+  hintBoostsDone: boolean;
+}
+
+export function freshMissions(): MissionState {
+  return { list: [], done: 0, avg: {}, skipDay: '' };
 }
 
 export function freshLife(): LifetimeStats {
@@ -133,7 +169,7 @@ export function newSave(): SaveData {
     runs: 0,
     blocksBroken: 0,
     discovered: [],
-    settings: { sound: true, vibration: true, lang: 'auto', shake: true, particles: 'high', music: true, musicStyle: 'groove', notifications: true },
+    settings: { sound: true, vibration: true, lang: 'auto', shake: true, particles: 'high', music: true, musicStyle: 'groove', notifications: true, boostsOpen: true },
     xp: 0,
     level: 1,
     life: freshLife(),
@@ -154,6 +190,12 @@ export function newSave(): SaveData {
     hintNudgeDone: false,
     hintEventsDone: false,
     pushAsked: false,
+    dashDown: 0,
+    boosts: { giant: 0, twin: 0, teleport: 0, shield: 0 },
+    loadout: ['dynamite'],
+    missions: freshMissions(),
+    hintDownDone: false,
+    hintBoostsDone: false,
   };
 }
 
@@ -172,12 +214,15 @@ export function migrate(raw: unknown): SaveData {
   // the elevator used to be free: keep every stop an existing player could already use
   if (!Array.isArray(r.liftStops)) out.liftStops = [20, 100, 250, 450, 700].filter((d) => (r.bestDepth ?? 0) >= d);
   out.achievements = { ...(r.achievements ?? {}) };
+  out.boosts = { ...base.boosts, ...(r.boosts ?? {}) };
+  out.loadout = Array.isArray(r.loadout) ? r.loadout : base.loadout;
+  out.missions = r.missions && Array.isArray(r.missions.list) ? { ...base.missions, ...r.missions } : base.missions;
   out.quests = r.quests && Array.isArray(r.quests.list) ? r.quests : base.quests;
   // v1 players already know how to play
   if (r.version === 1 && (r.runs ?? 0) > 0) out.tutorialDone = true;
   // existing players keep the balance they were playing with
   if (!r.difficulty && (r.runs ?? 0) > 0) out.difficulty = 'normal';
-  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen', 'pickSize', 'shaftWidth'] as const) {
+  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen', 'pickSize', 'shaftWidth', 'dashDown'] as const) {
     if (typeof out[k] !== 'number' || !Number.isFinite(out[k])) out[k] = base[k];
   }
   return out;

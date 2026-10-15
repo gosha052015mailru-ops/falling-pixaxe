@@ -1,5 +1,5 @@
 import { B, blockDef } from '../game/blocks';
-import { BIOMES, WORLD_W, biomeAt, biomeIndex } from '../game/config';
+import { BIOMES, BOOSTS, BOOST_FX, WORLD_W, biomeAt, biomeIndex } from '../game/config';
 import type { GameEvent, Run } from '../game/run';
 import { blockHp } from '../game/world';
 import { fmt } from '../ui/format';
@@ -12,6 +12,12 @@ const WALL_VIS = 0.5;
 const MAX_VIEW_COLS = 13;
 const PICK_SIZE = 1.25;
 const RAINBOW = ['#ff5f7e', '#ffd23f', '#5ee06f', '#6ff3f0', '#c77dff'];
+const BOOST_FX_COLORS: Record<string, string[]> = {
+  giant: ['#ffd23f', '#ffb020', '#fff'],
+  twin: ['#6ff3f0', '#bffcff', '#fff'],
+  teleport: ['#c77dff', '#6ff3f0', '#fff'],
+  shield: ['#5ab0ff', '#bfe3ff', '#fff'],
+};
 
 export class Renderer {
   readonly ctx: CanvasRenderingContext2D;
@@ -32,6 +38,12 @@ export class Renderer {
   private lastOhYes = -10;
   /** Seconds of the white dash streak left. */
   private dashGlow = 0;
+  /** Smoothed visual size of the giant power-up (springs in and out). */
+  private giantVis = 1;
+  private giantVel = 0;
+  /** Teleport portals: entry and exit swirl for a moment. */
+  private portals: { x: number; y: number; life: number; color: string }[] = [];
+  private beam: { x: number; y0: number; y1: number; life: number } | null = null;
   /** Settings / adaptive quality. */
   maxDpr = 3;
   shakeEnabled = true;
@@ -63,6 +75,10 @@ export class Renderer {
     this.camY = run.y - this.viewH * 0.35;
     this.flash = 0;
     this.shakeAmp = 0;
+    this.giantVis = 1;
+    this.giantVel = 0;
+    this.portals = [];
+    this.beam = null;
   }
 
   shake(amount: number): void {
@@ -184,6 +200,38 @@ export class Renderer {
       case 'dashEnd':
         if (e.broken >= 3) fx.text(this.lastPickX, this.lastPickY - 1, `${t('breakthrough')} ×${e.broken}!`, '#6ff3f0', 0.6);
         break;
+      case 'boost': {
+        if (e.id === 'dynamite') break;
+        const c = BOOST_FX_COLORS[e.id];
+        this.doFlash(c[0], 0.35);
+        fx.ring(e.x, e.y, 2.2, c[0]);
+        fx.ring(e.x, e.y, 3.4, c[1]);
+        fx.burst(e.x, e.y, c, 40, 9, 0.14, 2, true);
+        if (e.id === 'giant') {
+          this.shake(0.35);
+          this.giantVel = 6;
+        }
+        break;
+      }
+      case 'teleport':
+        this.portals.push({ x: e.x0, y: e.y0, life: 0.9, color: '#c77dff' }, { x: e.x, y: e.y, life: 1.1, color: '#6ff3f0' });
+        this.beam = { x: e.x, y0: e.y0, y1: e.y, life: 0.35 };
+        this.doFlash('#c77dff', 0.45);
+        this.trail = [];
+        fx.burst(e.x0, e.y0, ['#c77dff', '#fff'], 30, 7, 0.13, 0, true);
+        fx.burst(e.x, e.y, ['#6ff3f0', '#fff'], 40, 9, 0.14, 0, true);
+        fx.text(e.x, e.y - 1.2, `+${e.dist} m`, '#6ff3f0', 0.6);
+        this.shake(0.3);
+        // snap the camera so the arrival is visible at once
+        this.camY = e.y - this.viewH * 0.36;
+        break;
+      case 'boostEnd':
+        fx.burst(this.lastPickX, this.lastPickY, BOOST_FX_COLORS[e.id] ?? ['#fff'], 16, 5, 0.12, 0, true);
+        break;
+      case 'twinPoof':
+        fx.burst(e.x, e.y, ['#6ff3f0', '#bffcff', '#fff'], 18, 6, 0.12, 0, true);
+        fx.ring(e.x, e.y, 1.2, '#bffcff');
+        break;
       case 'nudge':
         fx.burst(this.lastPickX - e.dir * 0.5, this.lastPickY, ['rgba(255,255,255,0.8)'], 5, 3, 0.1, 0);
         break;
@@ -212,6 +260,15 @@ export class Renderer {
     this.shakeAmp *= Math.exp(-dt * 9);
     this.flash = Math.max(0, this.flash - dt * 2.2);
     this.dashGlow = Math.max(0, this.dashGlow - dt);
+    // giant: a springy grow / shrink with a little overshoot
+    const giantTarget = run.giantTimer > 0 ? BOOST_FX.giantRadius * 1.15 : 1;
+    this.giantVel += ((giantTarget - this.giantVis) * 90 - this.giantVel * 11) * dt;
+    this.giantVis += this.giantVel * dt;
+    for (const p of this.portals) p.life -= dt;
+    this.portals = this.portals.filter((p) => p.life > 0);
+    if (this.beam && (this.beam.life -= dt) <= 0) this.beam = null;
+    if (run.twinTimer > 0) for (const g of run.twins) if (Math.random() < 0.35) this.fx.burst(g.x, g.y, ['#6ff3f0', '#bffcff'], 1, 1.5, 0.1, 0, true);
+    if (run.giantTimer > 0 && Math.random() < 0.4) this.fx.burst(run.x, run.y, ['#ffd23f', '#fff'], 1, 3, 0.12, 0, true);
     this.fx.update(dt);
     const speed = Math.hypot(run.vx, run.vy);
     this.trail.push({ x: run.x, y: run.y });
@@ -290,13 +347,54 @@ export class Renderer {
       }
     }
 
+    // teleport portals and the light beam between them
+    for (const p of this.portals) this.drawPortal(toX(p.x), toY(p.y), p.life, p.color, s);
+    if (this.beam) {
+      const a = this.beam.life / 0.35;
+      const bx = toX(this.beam.x);
+      const gr = ctx.createLinearGradient(bx - s * 0.5, 0, bx + s * 0.5, 0);
+      gr.addColorStop(0, 'rgba(199,125,255,0)');
+      gr.addColorStop(0.5, `rgba(255,255,255,${0.85 * a})`);
+      gr.addColorStop(1, 'rgba(111,243,240,0)');
+      ctx.fillStyle = gr;
+      const ya = toY(this.beam.y0);
+      ctx.fillRect(bx - s * 0.5, ya, s, toY(this.beam.y1) - ya);
+    }
+
     // pickaxe + motion trail
     const pick = tex.pickaxes[run.tier];
     if (!run.over || run.core) {
+      // ghost twins: translucent, cyan-glowing copies
+      if (run.twinTimer > 0) {
+        for (const g of run.twins) {
+          const fade = Math.min(1, g.life / 0.5);
+          const gx = toX(g.x);
+          const gy = toY(g.y);
+          const gr = ctx.createRadialGradient(gx, gy, 0, gx, gy, s * 1.1);
+          gr.addColorStop(0, `rgba(111,243,240,${0.45 * fade})`);
+          gr.addColorStop(1, 'rgba(111,243,240,0)');
+          ctx.fillStyle = gr;
+          ctx.fillRect(gx - s * 1.2, gy - s * 1.2, s * 2.4, s * 2.4);
+          ctx.globalAlpha = 0.55 * fade;
+          this.drawPick(pick, gx, gy, g.angle, s, 0.85);
+          ctx.globalAlpha = 1;
+        }
+      }
+      const gv = Math.max(0.5, this.giantVis);
+      if (run.giantTimer > 0 || gv > 1.05) {
+        // golden aura; it blinks in the last 1.5 s
+        const blink = run.giantTimer > 0 && run.giantTimer < 1.5 && Math.floor(this.time * 8) % 2 === 0;
+        const r0 = s * 1.3 * gv;
+        const gr = ctx.createRadialGradient(toX(run.x), toY(run.y), 0, toX(run.x), toY(run.y), r0);
+        gr.addColorStop(0, `rgba(255,210,63,${blink ? 0.15 : 0.5})`);
+        gr.addColorStop(1, 'rgba(255,176,32,0)');
+        ctx.fillStyle = gr;
+        ctx.fillRect(toX(run.x) - r0, toY(run.y) - r0, r0 * 2, r0 * 2);
+      }
       for (let i = 0; i < this.trail.length - 1; i++) {
         const t = this.trail[i];
         ctx.globalAlpha = ((i + 1) / this.trail.length) * 0.25;
-        this.drawPick(pick, toX(t.x), toY(t.y), run.angle - (this.trail.length - i) * 0.05, s);
+        this.drawPick(pick, toX(t.x), toY(t.y), run.angle - (this.trail.length - i) * 0.05, s, this.giantVis);
       }
       ctx.globalAlpha = 1;
       if (run.fever) {
@@ -308,7 +406,8 @@ export class Renderer {
         ctx.fillRect(toX(run.x) - s * 1.5, toY(run.y) - s * 1.5, s * 3, s * 3);
         if (Math.random() < 0.6) this.fx.burst(run.x, run.y, RAINBOW, 1, 2, 0.12, 0, true);
       }
-      this.drawPick(pick, toX(run.x), toY(run.y), run.angle, s);
+      this.drawPick(pick, toX(run.x), toY(run.y), run.angle, s, gv);
+      if (run.shieldTimer > 0) this.drawShield(toX(run.x), toY(run.y), run.shieldTimer, s * PICK_SIZE * this.pickScale * gv * 0.62);
     }
 
     // particles
@@ -371,8 +470,53 @@ export class Renderer {
   /** Visual size grows with the pickaxe-size upgrade. */
   pickScale = 1;
 
-  private drawPick(img: HTMLCanvasElement, x: number, y: number, angle: number, s: number): void {
-    const size = PICK_SIZE * this.pickScale * s;
+  /** Bubble with a moving shimmer; blinks when it is about to pop. */
+  private drawShield(x: number, y: number, left: number, r: number): void {
+    const ctx = this.ctx;
+    if (left < 1.5 && Math.floor(this.time * 10) % 2 === 0) return;
+    const total = BOOSTS.shield.time ?? 8;
+    const wob = 1 + 0.04 * Math.sin(this.time * 9);
+    const R = r * wob;
+    const gr = ctx.createRadialGradient(x - R * 0.3, y - R * 0.35, R * 0.1, x, y, R);
+    gr.addColorStop(0, 'rgba(255,255,255,0.35)');
+    gr.addColorStop(0.7, 'rgba(90,176,255,0.12)');
+    gr.addColorStop(1, 'rgba(90,176,255,0.45)');
+    ctx.fillStyle = gr;
+    ctx.beginPath();
+    ctx.arc(x, y, R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = Math.max(2, R * 0.08);
+    ctx.strokeStyle = 'rgba(191,227,255,0.9)';
+    ctx.stroke();
+    // a bright arc runs around the bubble; it shrinks as time runs out
+    const a0 = this.time * 4;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = Math.max(2, R * 0.12);
+    ctx.beginPath();
+    ctx.arc(x, y, R, a0, a0 + Math.PI * 2 * Math.max(0.08, left / total));
+    ctx.stroke();
+  }
+
+  private drawPortal(x: number, y: number, life: number, color: string, s: number): void {
+    const ctx = this.ctx;
+    const k = Math.min(1, life / 0.4);
+    ctx.save();
+    ctx.translate(x, y);
+    for (let i = 0; i < 3; i++) {
+      ctx.globalAlpha = k * (0.9 - i * 0.25);
+      ctx.strokeStyle = i === 1 ? '#ffffff' : color;
+      ctx.lineWidth = Math.max(2, s * (0.16 - i * 0.03));
+      ctx.beginPath();
+      const rx = s * (0.95 + i * 0.35) * (0.6 + 0.4 * k);
+      ctx.ellipse(0, 0, rx, rx * 0.38, 0, this.time * (6 + i * 3), this.time * (6 + i * 3) + Math.PI * 1.5);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  private drawPick(img: HTMLCanvasElement, x: number, y: number, angle: number, s: number, mult = 1): void {
+    const size = PICK_SIZE * this.pickScale * s * mult;
     const ctx = this.ctx;
     ctx.save();
     ctx.translate(x, y);

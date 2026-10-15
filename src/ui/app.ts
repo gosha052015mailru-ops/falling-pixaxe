@@ -4,9 +4,9 @@ import { BIOME_THEMES, music, type ThemeId } from '../audio/music';
 import { sfx } from '../audio/sfx';
 import { blockDef } from '../game/blocks';
 import { Bot } from '../game/bot';
-import { BIOMES, FAST_FORWARD, PHYS, TIERS, biomeIndex } from '../game/config';
+import { BIOMES, BOOSTS, FAST_FORWARD, PHYS, TIERS, biomeIndex, type BoostId } from '../game/config';
 import { addCoins, deriveStats } from '../game/economy';
-import { trackQuests, unlocked } from '../game/meta';
+import { missionsReachedLive, progressMissions, runMetrics, unlocked, type MissionDone } from '../game/meta';
 import { addPlayTime, eventGoalFor, recordRun, startSession, userProperties } from '../game/profile';
 import { applyResult, type ProgressReport } from '../game/progress';
 import { Run, type GameEvent, type RunResult } from '../game/run';
@@ -17,10 +17,11 @@ import { Renderer } from '../render/renderer';
 import { makePickaxe } from '../render/textures';
 import { $, closeModal, modalOpen, toast } from './dom';
 import { fmt } from './format';
-import { setLang, t } from './i18n';
-import { icon } from './icons';
+import { missionText, setLang, t } from './i18n';
+import { BOOST_ICON, icon } from './icons';
 import { Screens, type ScreenId } from './screens';
 
+type Coach = 'none' | 'tap' | 'bomb' | 'nudges' | 'events' | 'down' | 'boosts';
 type Mode = 'menu' | 'play' | 'paused' | 'dying' | 'revive' | 'results';
 
 const FIXED_DT = 1 / 120;
@@ -29,6 +30,7 @@ const MAX_STEPS = 36;
 /** Background longer than this starts a new analytics session (industry default: 30 min). */
 const SESSION_TIMEOUT = 30 * 60_000;
 const BANNER_GAP = 4;
+const BOOST_COLOR: Record<BoostId, string> = { dynamite: '#ff6a3d', giant: '#ffb020', twin: '#6ff3f0', teleport: '#c77dff', shield: '#5ab0ff' };
 
 export class App {
   save: SaveData = loadSave();
@@ -53,7 +55,8 @@ export class App {
   private ffUnlocked = 0;
   private hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, fever: false, buffs: '' };
   private frameTimes: number[] = [];
-  private coachState: 'none' | 'tap' | 'bomb' | 'nudges' | 'events' = 'none';
+  private missionTick = 0;
+  private coachState: Coach = 'none';
   private evKey = '';
   /** Run time at which the nudge-panel hint should appear (0 = not planned this run). */
   private nudgeHintAt = 0;
@@ -64,6 +67,12 @@ export class App {
   private musicBiome = -1;
   private lastMinorBanner = -1e9;
   private bombHintShown = false;
+  /** Missions already celebrated during this run (toast once). */
+  private liveMissions = new Set<string>();
+  private boostKey = '';
+  /** Run time at which the down-breakthrough / power-up hints appear (0 = none). */
+  private downHintAt = 0;
+  private boostHintAt = 0;
 
   constructor() {
     const st = this.save.settings;
@@ -184,7 +193,7 @@ export class App {
    * Tester shortcut (console: game.cheat({...})). Edits the live save — editing localStorage
    * directly does not work because the game writes its in-memory state back on reload.
    */
-  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number; size?: number; width?: number; playMin?: number } = {}): void {
+  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number; size?: number; width?: number; playMin?: number; down?: number; boosts?: number } = {}): void {
     const s = this.save;
     s.coins += o.coins ?? 1e6;
     s.gems += o.gems ?? 100;
@@ -193,6 +202,8 @@ export class App {
     if (o.forge !== undefined) s.forgeTier = Math.max(0, Math.min(TIERS.length - 1, o.forge));
     if (o.size !== undefined) s.pickSize = Math.max(0, Math.min(5, o.size));
     if (o.width !== undefined) s.shaftWidth = Math.max(0, Math.min(5, o.width));
+    if (o.down !== undefined) s.dashDown = Math.max(0, Math.min(5, o.down));
+    if (o.boosts) for (const k of Object.keys(s.boosts) as (keyof typeof s.boosts)[]) s.boosts[k] += o.boosts;
     if (o.playMin !== undefined) s.profile.playSec = Math.max(s.profile.playSec, o.playMin * 60);
     if (!s.difficulty) s.difficulty = 'normal';
     s.tutorialDone = true;
@@ -246,7 +257,6 @@ export class App {
 
   private staticIcons(): void {
     $('pauseBtn').innerHTML = icon('pause', 24);
-    $('bombIcon').innerHTML = icon('bomb', 46);
   }
 
   // ───────────────────────── runs ─────────────────────────
@@ -289,10 +299,14 @@ export class App {
     // Explain the charges panel once: in the tutorial right after the first tap and the upgrade
     // banner (~3.5 s); runs 2–3 are only a fallback if it was missed.
     this.nudgeHintAt = this.save.hintNudgeDone ? 0 : tutorial ? 3.5 : this.save.runs <= 2 ? 2.5 : 0;
+    this.downHintAt = stats.dashDownBlocks > 0 && !this.save.hintDownDone ? 1.5 : 0;
+    this.boostHintAt = this.isUnlocked('boosts') && !this.save.hintBoostsDone && this.save.loadout.length > 0 ? 4 : 0;
+    this.liveMissions.clear();
+    this.buildBoosts();
     track('run_start', { n: this.save.runs + 1, start: stats.startDepth, tier: stats.startTier, tutorial });
   }
 
-  private setCoach(state: 'none' | 'tap' | 'bomb' | 'nudges' | 'events'): void {
+  private setCoach(state: Coach): void {
     this.coachState = state;
     const host = $('coach');
     $('evBar').classList.toggle('spot', state === 'events');
@@ -302,8 +316,16 @@ export class App {
       $('nudges').classList.remove('spot');
       return;
     }
-    $('bombBtn').classList.toggle('pulse', state === 'bomb');
+    $('boosts').querySelector('[data-boost=dynamite]')?.classList.toggle('pulse', state === 'bomb');
+    $('boosts').classList.toggle('spot', state === 'boosts');
     $('nudges').classList.toggle('spot', state === 'nudges');
+    if (state === 'down' || state === 'boosts') {
+      host.innerHTML = state === 'down'
+        ? `<div class="coach down-hint"><div class="bubble">${t('hintDown')}</div><span class="hand">${icon('hand', 52)}</span></div>`
+        : `<div class="coach boost-hint"><div class="bubble">${t('hintBoosts')}</div><span class="arrow">${icon('down', 34)}</span></div>`;
+      setTimeout(() => this.coachState === state && this.setCoach('none'), 6000);
+      return;
+    }
     if (state === 'nudges') {
       host.innerHTML = `<div class="coach nudge-hint"><div class="bubble">${t('hintNudges')}</div><span class="arrow">${icon('down', 34)}</span></div>`;
       setTimeout(() => this.coachState === 'nudges' && this.setCoach('none'), 6000);
@@ -398,7 +420,7 @@ export class App {
     if (!(await showRewardedAd(t('x2')))) return false;
     this.save.profile.adsWatched++;
     addCoins(this.save, r.totalCoins);
-    trackQuests(this.save, { coins: r.totalCoins }, this.now());
+    this.notifyMissions(progressMissions(this.save, { coins: r.totalCoins }, false));
     this.persist();
     track('ad_watched', { placement: 'x2' });
     return true;
@@ -421,14 +443,15 @@ export class App {
 
   // ───────────────────────── breakthrough charge ─────────────────────────
 
-  private charge: { dir: -1 | 1; start: number } | null = null;
+  private charge: { dir: -1 | 0 | 1; start: number } | null = null;
 
   /** Press: the first tap of the tutorial just releases the pickaxe; otherwise start charging. */
-  private startCharge(dir: -1 | 1): void {
+  private startCharge(dir: -1 | 0 | 1): void {
     if (this.run.hold) {
-      this.run.nudge(dir);
+      this.run.nudge(dir || 1);
       return;
     }
+    if (dir === 0 && this.run.stats.dashDownBlocks <= 0) return;
     if (this.run.nudges <= 0) {
       sfx.error();
       return;
@@ -456,6 +479,7 @@ export class App {
     el.classList.remove('hidden');
     el.classList.toggle('max', p >= 1);
     el.classList.toggle('left', this.charge?.dir === -1);
+    el.classList.toggle('down', this.charge?.dir === 0);
     $('powerFill').style.setProperty('--p', `${(p * 100).toFixed(0)}%`);
     $('powerText').textContent = p >= 1 ? t('powerMax') : t('power');
   }
@@ -636,8 +660,25 @@ export class App {
         break;
       case 'dynamite':
         if (this.coachState === 'bomb') this.setCoach('none');
+        if (this.coachState === 'boosts') this.setCoach('none');
         break;
       case 'revive':
+        break;
+      case 'boost':
+        if (e.id === 'dynamite') break;
+        sfx.tierUp();
+        vibrate('heavy');
+        this.banner(`${icon(BOOST_ICON[e.id], 54)}<div class="t">${t(`boost.${e.id}`)}</div>`, BOOST_COLOR[e.id]);
+        break;
+      case 'teleport':
+        sfx.magic();
+        vibrate('medium');
+        this.banner(`<div class="t">${t('teleported', { n: e.dist })}</div>`, BOOST_COLOR.teleport, false);
+        break;
+      case 'boostEnd':
+        if (e.id === 'giant' || e.id === 'shield') sfx.nudge();
+        break;
+      case 'twinPoof':
         break;
       case 'event':
         sfx.fanfare();
@@ -777,11 +818,22 @@ export class App {
       this.setCoach('nudges');
       track('hint_nudges', { run: this.save.runs + 1 });
     }
-    if (r.dynamite !== h.bombs) {
-      h.bombs = r.dynamite;
-      $('bombCount').textContent = String(r.dynamite);
-      $('bombBtn').classList.toggle('empty', r.dynamite === 0);
+    this.updateBoosts();
+    if (this.downHintAt && r.time >= this.downHintAt && this.coachState === 'none') {
+      this.downHintAt = 0;
+      this.save.hintDownDone = true;
+      this.persist();
+      this.setCoach('down');
     }
+    if (this.boostHintAt && r.time >= this.boostHintAt && this.coachState === 'none') {
+      this.boostHintAt = 0;
+      this.save.hintBoostsDone = true;
+      this.save.settings.boostsOpen = true;
+      $('boosts').classList.remove('closed');
+      this.persist();
+      this.setCoach('boosts');
+    }
+    if (++this.missionTick % 30 === 0) this.checkLiveMissions();
     const combo = r.combo >= 5 ? r.combo : 0;
     if (combo !== h.combo || r.fever !== h.fever) {
       const el = $('combo');
@@ -830,15 +882,26 @@ export class App {
       sfx.unlock();
       if (this.mode !== 'play') return;
       const rect = canvas.getBoundingClientRect();
-      this.startCharge(ev.clientX - rect.left < rect.width / 2 ? -1 : 1);
+      const fx = (ev.clientX - rect.left) / rect.width;
+      // with the down breakthrough the middle third dives straight down
+      if (this.run.stats.dashDownBlocks > 0) this.startCharge(fx < 1 / 3 ? -1 : fx > 2 / 3 ? 1 : 0);
+      else this.startCharge(fx < 0.5 ? -1 : 1);
     });
     // release anywhere (finger may slide off the canvas)
     window.addEventListener('pointerup', () => this.releaseCharge());
     window.addEventListener('pointercancel', () => this.releaseCharge());
-    $('bombBtn').addEventListener('pointerdown', (ev) => {
+    $('boosts').addEventListener('pointerdown', (ev) => {
       ev.stopPropagation();
-      if (this.mode === 'play' && this.run.useDynamite()) vibrate('medium');
-      else sfx.error();
+      const el = (ev.target as HTMLElement).closest<HTMLElement>('[data-boost],[data-btoggle]');
+      if (!el || this.mode !== 'play') return;
+      if (el.dataset.btoggle !== undefined) {
+        this.save.settings.boostsOpen = !this.save.settings.boostsOpen;
+        $('boosts').classList.toggle('closed', !this.save.settings.boostsOpen);
+        sfx.click();
+        this.persist();
+        return;
+      }
+      this.tapBoost(el.dataset.boost as BoostId);
     });
     $('pauseBtn').addEventListener('click', () => this.pause());
     $('ffBtn').addEventListener('pointerdown', (ev) => {
@@ -852,11 +915,13 @@ export class App {
       }
       if (ev.key === 'ArrowLeft' || ev.key === 'a') !ev.repeat && this.startCharge(-1);
       else if (ev.key === 'ArrowRight' || ev.key === 'd') !ev.repeat && this.startCharge(1);
-      else if (ev.key === ' ' || ev.key === 'ArrowDown') this.run.useDynamite();
+      else if (ev.key === 'ArrowDown' || ev.key === 's') !ev.repeat && this.startCharge(0);
+      else if (ev.key === ' ') this.tapBoost('dynamite');
+      else if (ev.key >= '1' && ev.key <= '3') this.tapBoost(this.save.loadout[Number(ev.key) - 1]);
       else if (ev.key === 'Escape' || ev.key === 'p') this.pause();
     });
     window.addEventListener('keyup', (ev) => {
-      if (['ArrowLeft', 'ArrowRight', 'a', 'd'].includes(ev.key)) this.releaseCharge();
+      if (['ArrowLeft', 'ArrowRight', 'ArrowDown', 'a', 'd', 's'].includes(ev.key)) this.releaseCharge();
     });
     window.addEventListener('resize', () => this.renderer.resize());
     document.addEventListener('visibilitychange', () => (document.hidden ? this.onBackground() : this.onForeground()));
@@ -925,9 +990,71 @@ export class App {
     return this.now() - this.runStartedAt;
   }
 
-  notifyQuests(done: { type: string; target: number }[]): void {
-    for (const q of done) {
-      toast(`${icon('scroll', 28)}<span>${t('questDoneToast')}<br><small class="sub">${t(`q.${q.type}`, { n: fmt(q.target) })}</small></span>`);
+  notifyMissions(done: MissionDone[]): void {
+    for (const d of done) {
+      toast(`${icon('scroll', 28)}<span>${t('missionDone')}<br><small class="sub">${missionText(d.mission, fmt)}</small></span>`);
+      sfx.chest();
+    }
+  }
+
+  // ───────────────────────── power-ups ─────────────────────────
+
+  /** HUD buttons for the run loadout (dynamite included); folds into one toggle. */
+  private buildBoosts(): void {
+    const host = $('boosts');
+    const ids = this.save.loadout.filter((id) => id === 'dynamite' || this.isUnlocked('boosts'));
+    const canFold = this.isUnlocked('boosts') && ids.length > 1;
+    host.classList.toggle('hidden', ids.length === 0);
+    host.classList.toggle('closed', canFold && !this.save.settings.boostsOpen);
+    host.innerHTML =
+      (canFold ? `<button class="btoggle" data-btoggle aria-label="power-ups">${icon('chevron', 26)}</button>` : '') +
+      `<div class="blist">${ids
+        .map((id) => `<button class="boost" data-boost="${id}" style="--c:${BOOST_COLOR[id]}" aria-label="${id}"><i class="bring"></i>${icon(BOOST_ICON[id], 40)}<span class="count">0</span></button>`)
+        .join('')}</div>`;
+    this.boostKey = '';
+  }
+
+  private updateBoosts(): void {
+    const r = this.run;
+    const ids = this.save.loadout;
+    const key = ids.map((id) => `${r.boostCount(id)}:${Math.ceil(r.boostActive(id) * 4)}`).join();
+    if (key === this.boostKey) return;
+    this.boostKey = key;
+    let total = 0;
+    for (const id of ids) {
+      const el = $('boosts').querySelector<HTMLElement>(`[data-boost=${id}]`);
+      if (!el) continue;
+      const n = r.boostCount(id);
+      const active = r.boostActive(id);
+      total += n;
+      el.querySelector('.count')!.textContent = String(n);
+      el.classList.toggle('empty', n === 0 && active <= 0);
+      el.classList.toggle('active', active > 0);
+      const time = BOOSTS[id].time ?? 1;
+      el.style.setProperty('--p', active > 0 ? `${((active / time) * 100).toFixed(0)}%` : '0%');
+    }
+    const tg = $('boosts').querySelector<HTMLElement>('[data-btoggle]');
+    if (tg) tg.dataset.n = String(total);
+  }
+
+  private tapBoost(id: BoostId | undefined): void {
+    if (!id || this.mode !== 'play' || !this.save.loadout.includes(id)) return;
+    if (this.run.useBoost(id)) {
+      vibrate('medium');
+      if (this.coachState === 'boosts') this.setCoach('none');
+    } else sfx.error();
+  }
+
+  /** Toast a mission the moment this run completes it (paid at the end of the run). */
+  private checkLiveMissions(): void {
+    const r = this.run;
+    if (r.init.tutorial || !this.save.missions.list.length) return;
+    const metrics = runMetrics(r.result(), this.save.startDepth || 0);
+    for (const m of missionsReachedLive(this.save, metrics)) {
+      const k = `${m.scope}:${m.type}:${m.target}`;
+      if (this.liveMissions.has(k)) continue;
+      this.liveMissions.add(k);
+      toast(`${icon('scroll', 28)}<span>${t('missionDone')}<br><small class="sub">${missionText(m, fmt)}</small></span>`);
       sfx.chest();
     }
   }

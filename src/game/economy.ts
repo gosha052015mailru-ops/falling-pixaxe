@@ -1,4 +1,7 @@
 import {
+  BOOSTS,
+  type BoostId,
+  DASH_DOWN,
   DIFFICULTY,
   FORGE_COSTS,
   MEGA,
@@ -84,6 +87,58 @@ export function buyMega(save: SaveData, id: MegaId): boolean {
   return true;
 }
 
+/** Coin rewards and item prices scale with progress so they always feel like 1–2 runs of income. */
+export function rewardScale(save: SaveData): number {
+  return Math.round(60 * Math.pow(1 + save.bestDepth / 15, 1.9));
+}
+
+export function dashDownCost(save: SaveData): number | null {
+  return save.dashDown >= DASH_DOWN.costs.length ? null : DASH_DOWN.costs[save.dashDown];
+}
+
+export function buyDashDown(save: SaveData): boolean {
+  const cost = dashDownCost(save);
+  if (cost === null || save.coins < cost) return false;
+  save.coins -= cost;
+  save.dashDown++;
+  save.life.upgradesBought++;
+  return true;
+}
+
+export function boostOwned(save: SaveData, id: BoostId): number {
+  return id === 'dynamite' ? save.dynamite : save.boosts[id];
+}
+
+export function addBoost(save: SaveData, id: BoostId, n: number): void {
+  if (id === 'dynamite') save.dynamite += n;
+  else save.boosts[id] += n;
+}
+
+export function boostCost(save: SaveData, id: BoostId): number {
+  return id === 'dynamite' ? dynamiteCost(save) : niceRound(Math.max(40, rewardScale(save) * BOOSTS[id].price));
+}
+
+export function buyBoost(save: SaveData, id: BoostId): boolean {
+  if (id === 'dynamite') return buyDynamite(save);
+  const cost = boostCost(save, id);
+  if (save.coins < cost) return false;
+  save.coins -= cost;
+  save.boosts[id]++;
+  return true;
+}
+
+/** Toggle a power-up in the run loadout (max LOADOUT_SIZE). Returns false when full. */
+export function toggleLoadout(save: SaveData, id: BoostId, max: number): boolean {
+  const i = save.loadout.indexOf(id);
+  if (i >= 0) {
+    save.loadout.splice(i, 1);
+    return true;
+  }
+  if (save.loadout.length >= max) return false;
+  save.loadout.push(id);
+  return true;
+}
+
 export function buyDynamite(save: SaveData): boolean {
   const cost = dynamiteCost(save);
   if (save.coins < cost) return false;
@@ -152,6 +207,10 @@ export interface RunStats {
   dynamite: number;
   totems: number;
   startDepth: number;
+  /** Max blocks of a straight-down breakthrough (0 = not bought). */
+  dashDownBlocks: number;
+  /** Power-ups brought into the run (dynamite is `dynamite`). */
+  boosts: Partial<Record<Exclude<BoostId, 'dynamite'>, number>>;
 }
 
 export function deriveStats(save: SaveData): RunStats {
@@ -173,8 +232,12 @@ export function deriveStats(save: SaveData): RunStats {
     blastRadius: RUN.dynamiteRadius + RUN.dynamiteRadiusPerLvl * u.blast,
     maxFallMult: 1 + 0.04 * u.weight,
     startTier: save.forgeTier,
-    dynamite: Math.min(save.dynamite, SHOP.maxDynamitePerRun),
+    dynamite: save.loadout.includes('dynamite') ? Math.min(save.dynamite, SHOP.maxDynamitePerRun) : 0,
     totems: Math.min(save.totems, 1),
     startDepth: save.startDepth,
+    dashDownBlocks: save.dashDown > 0 ? DASH_DOWN.blocks[save.dashDown - 1] : 0,
+    boosts: Object.fromEntries(
+      save.loadout.filter((id) => id !== 'dynamite').map((id) => [id, Math.min(save.boosts[id as Exclude<BoostId, 'dynamite'>] ?? 0, BOOSTS[id].perRun)]),
+    ),
   };
 }

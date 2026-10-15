@@ -1,20 +1,20 @@
 import { BIOMES, CHECKPOINTS, LIFT_COSTS } from './config';
 import { addCoins } from './economy';
-import { addXp, discoveryGems, runXp, trackQuests } from './meta';
+import { addXp, discoveryGems, ensureMissions, progressMissions, runMetrics, runXp, updateMissionAvg, type MissionDone } from './meta';
 import type { RunResult } from './run';
-import type { Quest, SaveData } from './save';
+import type { SaveData } from './save';
 
 export interface ProgressReport {
   xp: number;
   levelsReached: number[];
   newBlocks: string[];
   newBlockGems: number;
-  questsDone: Quest[];
+  missionsDone: MissionDone[];
   prevBest: number;
 }
 
 /** Apply a finished run to permanent progress. `mult` = 2 after a rewarded ad. */
-export function applyResult(save: SaveData, r: RunResult, mult = 1, now = Date.now()): ProgressReport {
+export function applyResult(save: SaveData, r: RunResult, mult = 1, _now = Date.now()): ProgressReport {
   const prevBest = save.bestDepth;
   addCoins(save, r.totalCoins * mult);
   save.gems += r.gems;
@@ -22,6 +22,9 @@ export function applyResult(save: SaveData, r: RunResult, mult = 1, now = Date.n
   save.blocksBroken += r.blocks;
   save.dynamite = Math.max(0, save.dynamite - r.dynamiteUsed + r.dynamiteFound);
   save.totems = Math.max(0, save.totems - r.totemsUsed);
+  for (const [id, n] of Object.entries(r.boostsUsed)) {
+    if (id !== 'dynamite' && n) save.boosts[id as keyof SaveData['boosts']] = Math.max(0, save.boosts[id as keyof SaveData['boosts']] - n);
+  }
   if (r.depth > save.bestDepth) save.bestDepth = r.depth;
   for (const m of r.newMilestones) if (!save.milestones.includes(m)) save.milestones.push(m);
   if (r.core) save.coreReached = true;
@@ -46,27 +49,17 @@ export function applyResult(save: SaveData, r: RunResult, mult = 1, now = Date.n
   }
   save.gems += newBlockGems;
 
+  // missions first (only the ones already active), then the averages new targets are built from
+  const metrics = runMetrics(r, save.startDepth || 0);
+  if (mult > 1) metrics.coins = r.totalCoins * mult;
+  const missionsDone = progressMissions(save, metrics, true);
+  updateMissionAvg(save, metrics);
+
   const xp = runXp(r.blocks, Math.max(0, r.depth - (save.startDepth || 0)));
   const levelsReached = addXp(save, xp);
-
-  const questsDone = trackQuests(
-    save,
-    {
-      blocks: r.blocks,
-      depth: r.depth,
-      tnt: r.tnt,
-      chests: r.chests,
-      combo: r.bestCombo,
-      tierUps: r.tierUps,
-      ores: r.ores,
-      runs: 1,
-      dynamite: r.dynamiteUsed,
-      coins: r.totalCoins * mult,
-    },
-    now,
-  );
+  ensureMissions(save);
   if (!save.tutorialDone) save.tutorialDone = true;
-  return { xp, levelsReached, newBlocks, newBlockGems, questsDone, prevBest };
+  return { xp, levelsReached, newBlocks, newBlockGems, missionsDone, prevBest };
 }
 
 /** Elevator stops the player can start from: reached AND bought (always includes 0). */

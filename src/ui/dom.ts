@@ -1,6 +1,6 @@
 import type { Reward } from '../game/meta';
 import { fmt } from './format';
-import { icon } from './icons';
+import { BOOST_ICON, icon } from './icons';
 
 export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -38,6 +38,7 @@ export function rewardTiles(r: Reward, labels: { totem: string; dynamite: string
   if (r.gems) items.push(tile('gem', '+' + r.gems));
   if (r.dynamite) items.push(tile('bomb', '+' + r.dynamite));
   if (r.totems) items.push(tile('totem', '+' + r.totems));
+  for (const [id, n] of Object.entries(r.boosts ?? {})) if (n) items.push(tile(BOOST_ICON[id], '+' + n));
   void labels;
   return `<div class="rewards">${items.join('')}</div>`;
 }

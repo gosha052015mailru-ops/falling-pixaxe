@@ -4,18 +4,16 @@
  * See GAME_DESIGN.md §6.1–6.2.
  */
 import { BLOCKS, B } from './blocks';
-import { CAMPAIGN_DEPTH } from './config';
-import { addCoins } from './economy';
+import { BOOST_IDS, DASH_DOWN, type BoostId } from './config';
+import { addBoost, addCoins, niceRound, rewardScale } from './economy';
+import type { RunResult } from './run';
 import { Rng } from './rng';
 import { dayKey } from './time';
-import type { Quest, SaveData } from './save';
+import type { Mission, SaveData } from './save';
 
 const HOUR = 3600_000;
 
-/** Coin rewards scale with progress so they always feel like 1–2 runs of income. */
-export function rewardScale(save: SaveData): number {
-  return Math.round(60 * Math.pow(1 + save.bestDepth / 15, 1.9));
-}
+export { rewardScale };
 
 // ───────────────────────── level ─────────────────────────
 
@@ -34,10 +32,14 @@ export interface Reward {
   dynamite?: number;
   totems?: number;
   chest?: ChestRarity;
+  boosts?: Partial<Record<BoostId, number>>;
 }
 
 export function levelReward(save: SaveData, level: number): Reward {
-  return { gems: 2 + Math.floor(level / 5), coins: Math.round(rewardScale(save) * 0.5) };
+  const r: Reward = { gems: 2 + Math.floor(level / 5), coins: Math.round(rewardScale(save) * 0.5) };
+  // power-ups open with a starter pack so the first loadout is never empty
+  if (level === FEATURE_LEVEL.boosts) r.boosts = { giant: 2, twin: 2, teleport: 2, shield: 2 };
+  return r;
 }
 
 /** Adds xp; returns the list of levels reached (rewards are granted). */
@@ -49,20 +51,22 @@ export function addXp(save: SaveData, xp: number): number[] {
     save.level++;
     reached.push(save.level);
     grant(save, levelReward(save, save.level));
+    if (save.level === FEATURE_LEVEL.boosts) for (const id of ['giant', 'teleport'] as BoostId[]) if (save.loadout.length < 3 && !save.loadout.includes(id)) save.loadout.push(id);
   }
   return reached;
 }
 
-export type Feature = 'upgrades' | 'forge' | 'quests' | 'collection' | 'items' | 'freeChest' | 'idle' | 'achievements' | 'daily';
+export type Feature = 'upgrades' | 'forge' | 'quests' | 'collection' | 'items' | 'boosts' | 'freeChest' | 'idle' | 'achievements' | 'daily';
 
 /** One new system at a time: never more than two unlocks on a level-up. */
 export const FEATURE_LEVEL: Record<Feature, number> = {
   upgrades: 1,
   forge: 2,
-  quests: 3,
+  quests: 1,
   daily: 3,
+  freeChest: 3,
   items: 4,
-  freeChest: 4,
+  boosts: 4,
   idle: 5,
   collection: 5,
   achievements: 6,
@@ -102,6 +106,7 @@ export function grant(save: SaveData, r: Reward): void {
   if (r.gems) save.gems += r.gems;
   if (r.dynamite) save.dynamite += r.dynamite;
   if (r.totems) save.totems += r.totems;
+  for (const [id, n] of Object.entries(r.boosts ?? {})) if (n) addBoost(save, id as BoostId, n);
 }
 
 export const FREE_CHEST_COOLDOWN = 4 * HOUR;
@@ -175,142 +180,220 @@ export function claimDaily(save: SaveData, now: number, rng: Rng): { index: numb
   return { index: st.index, reward };
 }
 
-// ───────────────────────── quests ─────────────────────────
+// ───────────────────────── missions ─────────────────────────
+/*
+ * An endless pool of missions (3 active slots). Targets are built from the player's own
+ * per-run averages, scaled by how many missions are already done:
+ *   "total" missions need R(done) runs' worth of progress, "run" missions need F(done)× an
+ *   average run. Early on (R < 1) every slot finishes within one run → ~3 per run; later
+ *   R grows to 6 → ~0.5 per run. Rewards are mostly power-ups (see BOOSTS).
+ */
 
-export type QuestType = 'blocks' | 'depth' | 'tnt' | 'chests' | 'combo' | 'tierUps' | 'ores' | 'runs' | 'dynamite' | 'upgrade' | 'coins';
-
-/** Per-run quest progress snapshot. `best` types use max, others are summed. */
-export interface QuestProgress {
-  blocks: number;
-  depth: number;
-  tnt: number;
-  chests: number;
-  combo: number;
-  tierUps: number;
-  ores: number;
-  runs: number;
-  dynamite: number;
-  upgrade: number;
-  coins: number;
+/** Runs' worth of progress a "total" mission needs. */
+export function missionRuns(done: number): number {
+  return Math.min(6, 0.15 + 0.04 * done);
 }
 
-const BEST_TYPES: QuestType[] = ['depth', 'combo'];
-
-function round5(n: number): number {
-  return Math.max(5, Math.round(n / 5) * 5);
+/** Share of an average run a "run" mission asks for. */
+export function missionRunFactor(done: number): number {
+  return Math.min(1.35, 0.35 + 0.012 * done);
 }
 
-export function questTarget(save: SaveData, type: QuestType): number {
-  const L = save.level;
-  switch (type) {
-    case 'blocks':
-      return round5(120 + 40 * L);
-    case 'depth':
-      return Math.min(CAMPAIGN_DEPTH, Math.max(10, round5(save.bestDepth * 0.85)));
-    case 'tnt':
-      return 3 + Math.floor(L / 3);
-    case 'chests':
-      return 1 + Math.floor(L / 6);
-    case 'combo':
-      return Math.min(150, round5(15 + 4 * L));
-    case 'tierUps':
-      return 1 + Math.floor(L / 5);
-    case 'ores':
-      return round5(15 + 6 * L);
-    case 'runs':
-      return 5;
-    case 'dynamite':
-      return 2 + Math.floor(L / 6);
-    case 'upgrade':
-      return 3;
-    case 'coins':
-      return round5(rewardScale(save) * 4);
+/** Starting guesses for the per-run averages (a fresh player's run). */
+const AVG_DEFAULT: Record<string, number> = {
+  blocks: 35, ores: 3, coins: 40, meters: 18, tnt: 1, chests: 0.6, tierUps: 0.6, dynamite: 0.3, dashes: 3, dashBlocks: 5,
+  bestDash: 2, fevers: 0, events: 0, boosts: 0, heals: 0.6, enchants: 0, slimes: 0, gems: 0, crits: 0, combo: 12, time: 20,
+};
+
+/** Everything a finished run contributes to missions. */
+export function runMetrics(r: RunResult, startDepth: number): Record<string, number> {
+  const boosts = Object.entries(r.boostsUsed).reduce((n, [id, v]) => n + (id === 'dynamite' ? 0 : v ?? 0), 0);
+  const m: Record<string, number> = {
+    blocks: r.blocks, ores: r.ores, coins: r.totalCoins, meters: Math.max(0, r.depth - startDepth), depth: r.depth, tnt: r.tnt,
+    chests: r.chests, tierUps: r.tierUps, dynamite: r.dynamiteUsed, dashes: r.dashes, dashBlocks: r.dashBlocks, bestDash: r.bestDash,
+    fevers: r.fevers, events: r.events, boosts, heals: r.heals, enchants: r.enchantsGot, slimes: r.slimes, gems: r.gems, crits: r.crits,
+    combo: r.bestCombo, time: Math.round(r.time), runs: 1,
+  };
+  for (const [k, v] of Object.entries(r.oreCounts)) m[`ore:${k}`] = v;
+  return m;
+}
+
+interface MissionTemplate {
+  /** Metric name (also the i18n key `m.<key>` / `mr.<key>` for run scope). */
+  metric: string;
+  scope: 'run' | 'total';
+  min: number;
+  max?: number;
+  avail?: (s: SaveData) => boolean;
+  /** Custom target instead of the average-based one. */
+  target?: (s: SaveData, done: number) => number;
+  w?: number;
+}
+
+const avg = (s: SaveData, k: string) => s.missions.avg[k] ?? AVG_DEFAULT[k] ?? 0;
+const has = (k: string, v: number) => (s: SaveData) => avg(s, k) >= v;
+
+const TEMPLATES: MissionTemplate[] = [
+  { metric: 'blocks', scope: 'total', min: 20, w: 3 },
+  { metric: 'blocks', scope: 'run', min: 15, w: 2 },
+  { metric: 'ores', scope: 'total', min: 4, w: 2 },
+  { metric: 'coins', scope: 'total', min: 40, w: 2 },
+  { metric: 'coins', scope: 'run', min: 30 },
+  { metric: 'meters', scope: 'total', min: 15, w: 2 },
+  {
+    metric: 'depth', scope: 'run', min: 10, w: 2,
+    target: (s, d) => Math.max(10, Math.round(s.bestDepth * Math.min(1.08, 0.75 + 0.006 * d))),
+  },
+  { metric: 'combo', scope: 'run', min: 10 },
+  { metric: 'time', scope: 'run', min: 15 },
+  { metric: 'tnt', scope: 'total', min: 2, avail: has('tnt', 0.4) },
+  { metric: 'chests', scope: 'total', min: 1, avail: has('chests', 0.25) },
+  { metric: 'tierUps', scope: 'total', min: 1, avail: (s) => s.level >= 2 && avg(s, 'tierUps') >= 0.3 },
+  { metric: 'dynamite', scope: 'total', min: 1, avail: (s) => s.dynamite > 0 || avg(s, 'dynamite') >= 0.3 },
+  { metric: 'dashes', scope: 'total', min: 3, w: 2 },
+  { metric: 'dashBlocks', scope: 'total', min: 5, w: 2 },
+  {
+    metric: 'bestDash', scope: 'run', min: 2,
+    target: (s, d) => Math.min(s.dashDown > 0 ? DASH_DOWN.blocks[s.dashDown - 1] : 5, 2 + Math.floor(avg(s, 'bestDash') * missionRunFactor(d))),
+  },
+  { metric: 'fevers', scope: 'total', min: 1, avail: has('fevers', 0.2) },
+  { metric: 'events', scope: 'total', min: 1, avail: has('events', 0.3) },
+  { metric: 'boosts', scope: 'total', min: 1, avail: (s) => s.level >= FEATURE_LEVEL.boosts },
+  { metric: 'heals', scope: 'total', min: 1, avail: has('heals', 0.3) },
+  { metric: 'enchants', scope: 'total', min: 1, avail: has('enchants', 0.2) },
+  { metric: 'slimes', scope: 'total', min: 2, avail: has('slimes', 0.3) },
+  { metric: 'gems', scope: 'total', min: 1, avail: has('gems', 0.3) },
+  { metric: 'crits', scope: 'total', min: 3, avail: has('crits', 1) },
+  { metric: 'runs', scope: 'total', min: 2, avail: (s) => s.missions.done >= 20, target: (_s, d) => Math.max(2, Math.round(1 + missionRuns(d) * 1.2)) },
+  { metric: 'upgrade', scope: 'total', min: 1, target: (_s, d) => 1 + Math.floor(missionRuns(d) / 2) },
+];
+
+function niceTarget(n: number): number {
+  if (n < 20) return Math.round(n);
+  if (n < 200) return Math.round(n / 5) * 5;
+  const mag = Math.pow(10, Math.floor(Math.log10(n)) - 1);
+  return Math.round(n / mag) * mag;
+}
+
+function makeMission(s: SaveData, rng: Rng, avoid: string[]): Mission {
+  const d = s.missions.done;
+  const pool: { item: MissionTemplate | string; w: number }[] = [];
+  for (const tpl of TEMPLATES) {
+    if (avoid.includes(`${tpl.scope}:${tpl.metric}`) || (tpl.avail && !tpl.avail(s))) continue;
+    pool.push({ item: tpl, w: tpl.w ?? 1 });
   }
-}
-
-export function questReward(save: SaveData, q: Quest): Reward {
-  const hard = q.type === 'depth' || q.type === 'combo' || q.type === 'tierUps';
-  return { coins: Math.round(rewardScale(save) * (hard ? 2 : 1.5)), gems: hard ? 2 : 1 };
-}
-
-const QUEST_POOL: QuestType[] = ['blocks', 'depth', 'tnt', 'chests', 'combo', 'tierUps', 'ores', 'runs', 'dynamite', 'upgrade', 'coins'];
-
-function hashStr(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
-}
-
-function makeQuests(save: SaveData, seed: number, avoid: QuestType[] = []): Quest[] {
-  const rng = new Rng(seed);
-  const pool = QUEST_POOL.filter((t) => !avoid.includes(t) && !(t === 'tierUps' && save.level < 2));
-  const out: Quest[] = [];
-  while (out.length < 3 && pool.length) {
-    const type = pool.splice(Math.floor(rng.next() * pool.length), 1)[0];
-    out.push({ type, target: questTarget(save, type), progress: 0, claimed: false });
+  // one template per ore the player keeps finding: "mine 12 iron"
+  for (const k of Object.keys(s.missions.avg)) {
+    if (k.startsWith('ore:') && avg(s, k) >= 0.7 && !avoid.includes(`total:${k}`)) pool.push({ item: k, w: 0.6 });
   }
+  const pick = rng.weighted(pool);
+  const tpl: MissionTemplate = typeof pick === 'string' ? { metric: pick, scope: 'total', min: 3 } : pick;
+  let target: number;
+  if (tpl.target) target = tpl.target(s, d);
+  else {
+    const k = tpl.scope === 'total' ? missionRuns(d) : missionRunFactor(d);
+    target = avg(s, tpl.metric) * k * rng.range(0.85, 1.15);
+  }
+  target = niceTarget(Math.max(tpl.min, target));
+  if (tpl.max) target = Math.min(tpl.max, target);
+  return { type: tpl.metric, scope: tpl.scope, target, progress: 0, reward: missionReward(s, rng, tpl.scope) };
+}
+
+function missionReward(s: SaveData, rng: Rng, scope: 'run' | 'total'): Mission['reward'] {
+  const d = s.missions.done + s.missions.list.length;
+  const boostsOpen = s.level >= FEATURE_LEVEL.boosts;
+  const anyBoost = (): BoostId => (boostsOpen ? rng.pick(BOOST_IDS) : 'dynamite');
+  // every 5th mission: a bundle of power-ups (no coins — the economy stays the run's job)
+  if (d % 5 === 4) return { boost: anyBoost(), n: 3, gems: 2 + Math.floor(d / 40) };
+  const roll = rng.next();
+  if (roll < 0.5) return { boost: anyBoost(), n: d >= 60 && rng.chance(0.4) ? 2 : 1 };
+  if (roll < 0.75) return { gems: rng.int(1, 2) + (d >= 40 ? 1 : 0) };
+  // a small top-up: a tenth of an average run
+  return { coins: niceRound(Math.max(20, avg(s, 'coins') * (scope === 'run' ? 0.15 : 0.1))) };
+}
+
+/** Fill the 3 slots (once missions are unlocked). */
+export function ensureMissions(s: SaveData): Mission[] {
+  if (!unlocked(s, 'quests')) return s.missions.list;
+  const rng = new Rng(0x9e37 + s.missions.done * 7919 + s.runs * 31);
+  while (s.missions.list.length < 3) {
+    s.missions.list.push(makeMission(s, rng, s.missions.list.map((m) => `${m.scope}:${m.type}`)));
+  }
+  return s.missions.list;
+}
+
+export function grantMission(s: SaveData, m: Mission): Reward {
+  const r = m.reward;
+  const out: Reward = {};
+  if (r.coins) out.coins = r.coins;
+  if (r.gems) out.gems = r.gems;
+  if (r.boost) out.boosts = { [r.boost]: r.n ?? 1 };
+  grant(s, out);
   return out;
 }
 
-/** Make sure today's quests exist; returns the state. */
-export function ensureQuests(save: SaveData, now: number): SaveData['quests'] {
-  const day = dayKey(now);
-  if (save.quests.day !== day) {
-    save.quests = { day, list: makeQuests(save, hashStr(day) ^ save.runs), bonusClaimed: false, rerolled: false };
-  }
-  return save.quests;
+export interface MissionDone {
+  mission: Mission;
+  reward: Reward;
 }
 
-export function rerollQuest(save: SaveData, index: number, now: number): boolean {
-  const qs = ensureQuests(save, now);
-  const q = qs.list[index];
-  if (!q || q.claimed || qs.rerolled) return false;
-  const fresh = makeQuests(save, hashStr(qs.day + index) ^ (now & 0xffff), qs.list.map((x) => x.type as QuestType));
-  if (!fresh.length) return false;
-  qs.list[index] = fresh[0];
-  qs.rerolled = true;
-  return true;
-}
-
-/** Apply progress; returns quests that became complete in this update. */
-export function trackQuests(save: SaveData, p: Partial<QuestProgress>, now: number): Quest[] {
-  const qs = ensureQuests(save, now);
-  const done: Quest[] = [];
-  for (const q of qs.list) {
-    if (q.claimed || q.progress >= q.target) continue;
-    const v = p[q.type as QuestType];
-    if (!v) continue;
-    q.progress = BEST_TYPES.includes(q.type as QuestType) ? Math.max(q.progress, v) : q.progress + v;
-    if (q.progress >= q.target) {
-      q.progress = q.target;
-      done.push(q);
-    }
+/**
+ * Apply progress. `run` = metrics of a finished run (run-scope missions use max, total ones sum);
+ * otherwise only "total" missions move (purchases, idle coins…). Finished missions are paid,
+ * counted and replaced right away.
+ */
+export function progressMissions(s: SaveData, metrics: Record<string, number>, run: boolean): MissionDone[] {
+  ensureMissions(s);
+  const done: MissionDone[] = [];
+  for (const m of s.missions.list) {
+    const v = metrics[m.type];
+    if (!v || (m.scope === 'run' && !run)) continue;
+    m.progress = m.scope === 'run' ? Math.max(m.progress, v) : m.progress + v;
   }
+  for (const m of [...s.missions.list]) {
+    if (m.progress < m.target) continue;
+    m.progress = m.target;
+    const reward = grantMission(s, m);
+    s.missions.done++;
+    s.missions.list.splice(s.missions.list.indexOf(m), 1);
+    done.push({ mission: m, reward });
+  }
+  if (done.length) ensureMissions(s);
   return done;
 }
 
-export function claimQuest(save: SaveData, index: number, now: number): Reward | null {
-  const qs = ensureQuests(save, now);
-  const q = qs.list[index];
-  if (!q || q.claimed || q.progress < q.target) return null;
-  q.claimed = true;
-  const r = questReward(save, q);
-  grant(save, r);
-  return r;
+/** Fold a finished run into the per-run averages that mission targets are built from. */
+export function updateMissionAvg(s: SaveData, metrics: Record<string, number>): void {
+  const a = s.missions.avg;
+  const keys = new Set([...Object.keys(AVG_DEFAULT), ...Object.keys(metrics), ...Object.keys(a).filter((k) => k.startsWith('ore:'))]);
+  for (const k of keys) {
+    if (k === 'runs' || k === 'depth') continue;
+    const prev = a[k] ?? AVG_DEFAULT[k] ?? 0;
+    a[k] = Math.round((prev * 0.75 + (metrics[k] ?? 0) * 0.25) * 100) / 100;
+  }
 }
 
-export function questBonusReady(save: SaveData): boolean {
-  return !save.quests.bonusClaimed && save.quests.list.length > 0 && save.quests.list.every((q) => q.claimed);
+/** Live check during a run: which missions this run has already finished (for a toast). */
+export function missionsReachedLive(s: SaveData, metrics: Record<string, number>): Mission[] {
+  return s.missions.list.filter((m) => {
+    const v = metrics[m.type] ?? 0;
+    return m.progress < m.target && (m.scope === 'run' ? v : m.progress + v) >= m.target;
+  });
 }
 
-export function claimQuestBonus(save: SaveData, rng: Rng): Reward | null {
-  if (!questBonusReady(save)) return null;
-  save.quests.bonusClaimed = true;
-  return { ...openChest(save, 'rare', rng), chest: 'rare' };
+/** Once a day a mission can be swapped for free. */
+export function skipMission(s: SaveData, index: number, now: number): boolean {
+  const day = dayKey(now);
+  const m = s.missions.list[index];
+  if (!m || s.missions.skipDay === day) return false;
+  s.missions.skipDay = day;
+  const rng = new Rng(now & 0xffffff);
+  s.missions.list[index] = makeMission(s, rng, s.missions.list.map((x) => `${x.scope}:${x.type}`));
+  return true;
 }
 
-export function questsClaimable(save: SaveData): number {
-  return save.quests.list.filter((q) => !q.claimed && q.progress >= q.target).length + (questBonusReady(save) ? 1 : 0);
+export function missionsSkipReady(s: SaveData, now: number): boolean {
+  return s.missions.skipDay !== dayKey(now);
 }
 
 // ───────────────────────── collection ─────────────────────────
