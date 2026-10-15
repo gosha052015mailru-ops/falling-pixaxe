@@ -45,7 +45,7 @@ export const RUN = {
    * The first (tutorial) run is a short demo: ~15–20 s that shows the upgrade, a chest
    * and TNT, then ends — durability is scaled down only for that run.
    */
-  tutorialDurability: 30,
+  tutorialDurability: 28,
   comboWindow: 1.2,
   comboStep: 0.025,
   comboCap: 40,
@@ -84,13 +84,13 @@ export interface TierDef {
 
 export const TIERS: TierDef[] = [
   { key: 'wood', dmg: 1, dur: 1.0, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#b5895a', edge: '#8a6238', handle: '#6b4423' } },
-  { key: 'stone', dmg: 2, dur: 1.15, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#9a9aa2', edge: '#6e6e76', handle: '#6b4423' } },
-  { key: 'copper', dmg: 3, dur: 1.3, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#e8894a', edge: '#b25a24', handle: '#6b4423' } },
+  { key: 'stone', dmg: 2, dur: 1.0, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#9a9aa2', edge: '#6e6e76', handle: '#6b4423' } },
+  { key: 'copper', dmg: 3, dur: 1.15, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#e8894a', edge: '#b25a24', handle: '#6b4423' } },
   { key: 'iron', dmg: 5, dur: 1.45, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#e6e6ec', edge: '#a9a9b3', handle: '#6b4423' } },
   { key: 'gold', dmg: 8, dur: 1.1, coinBonus: 0.25, critBonus: 0, fireproof: false, colors: { head: '#ffd23f', edge: '#e59a10', handle: '#6b4423' } },
-  { key: 'diamond', dmg: 12, dur: 1.7, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#6ff3f0', edge: '#2ab7c4', handle: '#6b4423' } },
-  { key: 'obsidian', dmg: 20, dur: 2.0, coinBonus: 0, critBonus: 0, fireproof: true, colors: { head: '#5b2d8a', edge: '#2a1240', handle: '#3a2a1a' } },
-  { key: 'star', dmg: 35, dur: 2.3, coinBonus: 0.25, critBonus: 0.1, fireproof: true, colors: { head: '#fff7a8', edge: '#ff7ad9', handle: '#4a3aa8' } },
+  { key: 'diamond', dmg: 12, dur: 1.6, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#6ff3f0', edge: '#2ab7c4', handle: '#6b4423' } },
+  { key: 'obsidian', dmg: 20, dur: 1.85, coinBonus: 0, critBonus: 0, fireproof: true, colors: { head: '#5b2d8a', edge: '#2a1240', handle: '#3a2a1a' } },
+  { key: 'star', dmg: 35, dur: 2.1, coinBonus: 0.25, critBonus: 0.1, fireproof: true, colors: { head: '#fff7a8', edge: '#ff7ad9', handle: '#4a3aa8' } },
 ];
 export const MAX_TIER = TIERS.length - 1;
 

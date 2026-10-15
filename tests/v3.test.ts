@@ -211,3 +211,25 @@ describe('mine events', () => {
     expect(eventGoalFor(s)).toBe(55);
   });
 });
+
+describe('tier-based wear', () => {
+  it('a better pickaxe wears less on softer blocks, never more than 1', async () => {
+    const { wearFactor, B: Blocks } = await import('../src/game/blocks');
+    expect(wearFactor(Blocks.DIRT, 0)).toBe(1);
+    expect(wearFactor(Blocks.DIRT, 1)).toBe(0.5);
+    expect(wearFactor(Blocks.DIRT, 4)).toBe(1 / 16);
+    expect(wearFactor(Blocks.STONE, 1)).toBe(1);
+    expect(wearFactor(Blocks.OBSIDIAN, 2)).toBe(1);
+    expect(wearFactor(Blocks.DIRT, 7)).toBeGreaterThanOrEqual(0.05);
+  });
+  it('a golden pickaxe barely loses durability chopping dirt', () => {
+    const s = newSave();
+    s.forgeTier = 4;
+    const run = new Run({ seed: 3, stats: deriveStats(s), bestDepth: 0, milestones: [] });
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, B.DIRT);
+    const before = run.durability;
+    for (let i = 0; i < 120 * 3 && !run.over; i++) run.step(1 / 120);
+    expect(run.blocks).toBeGreaterThan(5);
+    expect(before - run.durability).toBeLessThan(run.blocks * 0.1);
+  });
+});

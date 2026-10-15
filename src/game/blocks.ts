@@ -126,3 +126,36 @@ for (const def of defs) BLOCKS[def.id] = def;
 export function blockDef(id: number): BlockDef {
   return BLOCKS[id];
 }
+
+/**
+ * Hardness = the pickaxe tier a block is "meant" for (0 wood … 7 star).
+ * A pickaxe above a block's hardness wears less on it (see wearFactor).
+ */
+export const HARDNESS: Partial<Record<B, number>> = {
+  [B.GRASS]: 0,
+  [B.DIRT]: 0,
+  [B.CLAY]: 0,
+  [B.STONE]: 1,
+  [B.COAL]: 1,
+  [B.COPPER]: 2,
+  [B.IRON]: 3,
+  [B.DEEPSTONE]: 3,
+  [B.GOLD]: 4,
+  [B.RUBY]: 4,
+  [B.SAPPHIRE]: 4,
+  [B.BASALT]: 5,
+  [B.DIAMOND]: 5,
+  [B.CRYSTAL]: 5,
+  [B.AMETHYST]: 6,
+  [B.EMERALD]: 6,
+  [B.OBSIDIAN]: 7,
+  [B.VOIDSTONE]: 7,
+  [B.STARORE]: 7,
+  [B.BEDROCK]: 7,
+};
+
+/** Durability used per hit: full when the pickaxe is not above the block, halved per tier above it. */
+export function wearFactor(id: B, tier: number): number {
+  const h = HARDNESS[id] ?? 0;
+  return tier <= h ? 1 : Math.max(0.05, Math.pow(0.5, tier - h));
+}

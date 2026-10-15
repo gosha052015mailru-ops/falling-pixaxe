@@ -1,4 +1,4 @@
-import { B, blockDef } from './blocks';
+import { B, blockDef, wearFactor } from './blocks';
 import {
   MINE_EVENTS,
   type MineEventId,
@@ -507,7 +507,8 @@ export class Run {
     const dmg = this.damagePerHit * impact * focusMult * (crit ? PHYS.critMult : 1);
     const before = this.world.hpAt(cx, cy);
 
-    this.spendDurability(def.durCost);
+    // a better pickaxe wears less on softer blocks
+    this.spendDurability(def.durCost * wearFactor(id, this.tier));
 
     this.sideSwing(cx, cy, dmg);
 

@@ -3,7 +3,7 @@ import { analyticsExport, analyticsLog, eventCounts, track } from '../analytics'
 const analyticsLogSize = () => analyticsLog().length;
 import { music } from '../audio/music';
 import { sfx } from '../audio/sfx';
-import { BLOCKS } from '../game/blocks';
+import { B, BLOCKS, wearFactor } from '../game/blocks';
 import { BIOMES, DIFFICULTY, MAX_TIER, MEGA, PRESTIGE, SHOP, TIERS, UPGRADES, WORLD_W, type Difficulty, type MegaId, type UpgradeId } from '../game/config';
 import {
   buyDynamite,
@@ -540,6 +540,8 @@ export class Screens {
     const cur = s.forgeTier;
     const tiers = TIERS.map((tr, i) => {
       const bonus = [`${icon('hammer', 18)} x${tr.dmg}`, `${icon('heart', 18)} x${tr.dur}`];
+      // better pickaxes wear less on soft blocks (wood = full wear on dirt)
+      if (i > 0) bonus.push(t('wearSoft', { n: `1/${Math.round(1 / wearFactor(B.DIRT, i))}` }));
       if (tr.coinBonus) bonus.push(`${icon('coin', 18)} +${tr.coinBonus * 100}%`);
       if (tr.fireproof) bonus.push(`${icon('fire', 18)}`);
       return `<div class="card ${i > cur ? 'dim' : ''}"><div class="ic"><img src="${this.app.pickUrl(i)}"></div>
