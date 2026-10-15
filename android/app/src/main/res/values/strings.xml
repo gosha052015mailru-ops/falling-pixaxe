@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Falling Pickaxe</string>
+    <string name="title_activity_main">Falling Pickaxe</string>
+    <string name="package_name">com.fallingpickaxe.game</string>
+    <string name="custom_url_scheme">com.fallingpickaxe.game</string>
+</resources>

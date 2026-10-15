@@ -126,6 +126,8 @@ export class Run {
   events: GameEvent[] = [];
   private blasts: PendingBlast[] = [];
   private heals = 0;
+  private focusCell = '';
+  private focus = 0;
   private pickBreaks = 0;
 
   constructor(readonly init: RunInit) {
@@ -345,7 +347,11 @@ export class Run {
     const impact = Math.max(PHYS.impactMin, Math.min(PHYS.impactMax, PHYS.impactMin + 0.4 * (vn / PHYS.impactRef)));
     const critChance = this.stats.critChance + TIERS[this.tier].critBonus;
     const crit = this.rng.chance(critChance);
-    const dmg = this.damagePerHit * impact * (crit ? PHYS.critMult : 1);
+    const cell = `${cx},${cy}`;
+    this.focus = cell === this.focusCell ? Math.min(PHYS.focusMax, this.focus + 1) : 0;
+    this.focusCell = cell;
+    const focusMult = 1 + PHYS.focusStep * this.focus;
+    const dmg = this.damagePerHit * impact * focusMult * (crit ? PHYS.critMult : 1);
     const before = this.world.hpAt(cx, cy);
 
     this.spendDurability(def.durCost);

@@ -1,0 +1,315 @@
+import { B, blockDef } from '../game/blocks';
+import { BIOMES, WORLD_W, biomeAt, biomeIndex } from '../game/config';
+import type { GameEvent, Run } from '../game/run';
+import { blockHp } from '../game/world';
+import { fmt } from '../ui/format';
+import { Particles } from './particles';
+import { buildTextures, shade, type Textures } from './textures';
+
+const WALL_VIS = 0.5;
+const VIEW_W = WORLD_W + WALL_VIS * 2;
+const PICK_SIZE = 1.25;
+
+export class Renderer {
+  readonly ctx: CanvasRenderingContext2D;
+  readonly tex: Textures;
+  readonly fx = new Particles();
+  scale = 40;
+  viewH = 16;
+  camY = -6;
+  private shakeAmp = 0;
+  private flash = 0;
+  private flashColor = '#fff';
+  private trail: { x: number; y: number }[] = [];
+  private time = 0;
+
+  constructor(readonly canvas: HTMLCanvasElement) {
+    this.ctx = canvas.getContext('2d', { alpha: false })!;
+    this.tex = buildTextures();
+    this.resize();
+  }
+
+  resize(): void {
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const w = this.canvas.clientWidth || window.innerWidth;
+    const h = this.canvas.clientHeight || window.innerHeight;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    this.scale = this.canvas.width / VIEW_W;
+    this.viewH = this.canvas.height / this.scale;
+  }
+
+  reset(run: Run): void {
+    this.fx.clear();
+    this.trail = [];
+    this.camY = run.y - this.viewH * 0.35;
+    this.flash = 0;
+    this.shakeAmp = 0;
+  }
+
+  shake(amount: number): void {
+    this.shakeAmp = Math.min(0.6, Math.max(this.shakeAmp, amount));
+  }
+
+  doFlash(color: string, strength = 0.6): void {
+    this.flash = strength;
+    this.flashColor = color;
+  }
+
+  /** Turn simulation events into particles, numbers, shake and flashes. */
+  onEvent(e: GameEvent): void {
+    const fx = this.fx;
+    switch (e.t) {
+      case 'hit': {
+        const def = blockDef(e.id);
+        fx.burst(e.x + 0.5, e.y + 0.5, [def.colors[0], def.colors[1], '#fff'], e.crit ? 10 : 4, 4, 0.1);
+        this.shake(e.crit ? 0.12 : 0.04);
+        if (e.crit) fx.text(e.x + 0.5, e.y, 'CRIT!', '#ff5577', 0.45);
+        break;
+      }
+      case 'break': {
+        const def = blockDef(e.id);
+        const cols = [def.colors[0], def.colors[1], def.colors[2] ?? def.colors[1]];
+        fx.burst(e.x + 0.5, e.y + 0.5, cols, def.ore ? 16 : 9, def.ore ? 7 : 5);
+        if (e.coins >= 1 && (def.ore || e.coins >= 5)) {
+          fx.text(e.x + 0.5, e.y + 0.3, '+' + fmt(e.coins), def.ore ? def.colors[1] : '#ffd23f', def.ore ? 0.55 : 0.42);
+        }
+        if (def.ore && def.value >= 50) {
+          fx.burst(e.x + 0.5, e.y + 0.5, ['#fff', def.colors[1]], 10, 9, 0.08, 4, true);
+          this.shake(0.15);
+        } else this.shake(0.05);
+        break;
+      }
+      case 'bounce':
+        if (e.speed > 3) fx.burst(e.x, e.y, ['#999', '#ddd'], 2, 2, 0.07);
+        break;
+      case 'explode':
+        fx.ring(e.x, e.y, e.r * 1.2, '#ffcf6a');
+        fx.burst(e.x, e.y, ['#ffdd55', '#ff8800', '#ff3300', '#555'], 40, 12, 0.2, 10, true);
+        this.shake(0.35 + Math.min(0.25, e.chain * 0.05));
+        this.doFlash('#ffcc66', 0.35);
+        if (e.chain >= 2) fx.text(e.x, e.y - 1, `×${e.chain + 1} CHAIN!`, '#ff8844', 0.7);
+        break;
+      case 'tierUp':
+        this.doFlash('#ffffff', 0.85);
+        this.shake(0.3);
+        fx.ring(this.lastPickX, this.lastPickY, 3, '#ffffff');
+        fx.burst(this.lastPickX, this.lastPickY, ['#fff', '#ffd23f', '#6ff3f0'], 50, 10, 0.15, 6, true);
+        break;
+      case 'heal':
+        fx.burst(this.lastPickX, this.lastPickY, ['#5dff7a', '#b6ffbf'], 20, 5, 0.12, -4, true);
+        fx.text(this.lastPickX, this.lastPickY - 1, `+${e.amount} ❤`, '#5dff7a', 0.55);
+        break;
+      case 'chest':
+        fx.burst(e.x + 0.5, e.y + 0.5, ['#ffd23f', '#fff1a8', '#a8722f'], 30, 8, 0.14, 15, true);
+        break;
+      case 'furnace':
+        this.doFlash('#ff8c1a', 0.3);
+        break;
+      case 'enchant':
+        this.doFlash('#c77dff', 0.5);
+        fx.burst(this.lastPickX, this.lastPickY, ['#c77dff', '#ff66d9', '#fff'], 35, 7, 0.12, -2, true);
+        break;
+      case 'gem':
+        fx.burst(e.x + 0.5, e.y + 0.5, ['#ff66d9', '#fff'], 20, 6, 0.12, 5, true);
+        fx.text(e.x + 0.5, e.y, '+1 💎', '#ff9de6', 0.55);
+        break;
+      case 'slime':
+        fx.burst(e.x, e.y - 0.4, ['#9cff9c', '#6bd66b'], 8, 5, 0.14);
+        this.shake(0.08);
+        break;
+      case 'lava':
+        fx.burst(e.x, e.y, ['#ff5a00', '#ffb300', '#333'], 6, 3, 0.12, -6);
+        this.doFlash('#ff3300', 0.15);
+        break;
+      case 'milestone':
+        this.doFlash('#ffd23f', 0.6);
+        break;
+      case 'totem':
+        this.doFlash('#ffe066', 0.9);
+        fx.burst(this.lastPickX, this.lastPickY, ['#ffe066', '#5dff7a', '#fff'], 60, 10, 0.15, 3, true);
+        break;
+      case 'shatter': {
+        fx.burst(e.x, e.y, ['#fff', '#aaa', '#6b4423'], 40, 9, 0.16, 20);
+        this.shake(0.45);
+        this.doFlash('#ff3344', 0.4);
+        break;
+      }
+      case 'core':
+        this.doFlash('#ffffff', 1);
+        fx.burst(this.lastPickX, this.lastPickY, ['#fff2a8', '#ff7ad9', '#6ff3f0'], 120, 14, 0.2, 2, true);
+        break;
+      case 'nudge':
+        fx.burst(this.lastPickX - e.dir * 0.5, this.lastPickY, ['rgba(255,255,255,0.8)'], 5, 3, 0.1, 0);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private lastPickX = 4.5;
+  private lastPickY = 0;
+
+  update(run: Run, dt: number): void {
+    this.time += dt;
+    this.lastPickX = run.x;
+    this.lastPickY = run.y;
+    const target = run.y - this.viewH * 0.36 + Math.max(0, run.vy) * 0.25;
+    this.camY += (target - this.camY) * Math.min(1, dt * 6);
+    this.shakeAmp *= Math.exp(-dt * 9);
+    this.flash = Math.max(0, this.flash - dt * 2.2);
+    this.fx.update(dt);
+    const speed = Math.hypot(run.vx, run.vy);
+    this.trail.push({ x: run.x, y: run.y });
+    if (this.trail.length > (speed > 9 ? 8 : 3)) this.trail.shift();
+  }
+
+  draw(run: Run): void {
+    const { ctx, scale: s, tex } = this;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    ctx.imageSmoothingEnabled = false;
+
+    const sx = (Math.random() - 0.5) * this.shakeAmp * 2;
+    const sy = (Math.random() - 0.5) * this.shakeAmp * 2;
+    const camY = this.camY + sy;
+    const ox = (WALL_VIS + sx) * s;
+    const toX = (x: number) => ox + x * s;
+    const toY = (y: number) => (y - camY) * s;
+
+    // background
+    const biome = biomeAt(Math.max(0, Math.floor(run.y)));
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, biome.bg[0]);
+    g.addColorStop(1, biome.bg[1]);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    const y0 = Math.floor(camY) - 1;
+    const y1 = Math.ceil(camY + this.viewH) + 1;
+    const world = run.world;
+    const sz = Math.ceil(s) + 1;
+    const lavaFrame = tex.lava[Math.floor(this.time * 4) % tex.lava.length];
+
+    for (let y = y0; y <= y1; y++) {
+      const py = Math.floor(toY(y));
+      if (y < 0) {
+        // daylight sky above the surface, fading into the dark at the top
+        const k = Math.max(0, 1 + y / 14);
+        ctx.fillStyle = `rgb(${Math.round(40 + 70 * k)},${Math.round(60 + 120 * k)},${Math.round(110 + 130 * k)})`;
+        ctx.fillRect(0, py, W, sz);
+        continue;
+      }
+      const backId = BIOMES[biomeIndex(y)].base[0].item;
+      for (let x = -1; x <= WORLD_W; x++) {
+        const pxX = Math.floor(toX(x));
+        const id = world.get(x, y);
+        if (world.isWall(x)) {
+          ctx.drawImage(tex.blocks[B.BEDROCK], pxX, py, sz, sz);
+          continue;
+        }
+        if (id === B.AIR) {
+          ctx.drawImage(tex.back[backId], pxX, py, sz, sz);
+          continue;
+        }
+        if (id === B.LAVA) {
+          ctx.drawImage(lavaFrame, pxX, py, sz, sz);
+          continue;
+        }
+        ctx.drawImage(tex.blocks[id], pxX, py, sz, sz);
+        const def = blockDef(id);
+        if (Number.isFinite(def.hp) && !def.special) {
+          const frac = world.hpAt(x, y) / blockHp(id, y);
+          if (frac < 0.999) {
+            const stage = frac > 0.66 ? 0 : frac > 0.33 ? 1 : 2;
+            ctx.drawImage(tex.cracks[stage], pxX, py, sz, sz);
+          }
+        } else if (def.special && def.special !== 'slime') {
+          // pulsing outline so the eye finds special blocks
+          const a = 0.35 + 0.35 * Math.sin(this.time * 5 + x + y);
+          ctx.strokeStyle = shade(def.colors[1], 0.3).replace('rgb', 'rgba').replace(')', `,${a})`);
+          ctx.lineWidth = Math.max(2, s * 0.06);
+          ctx.strokeRect(pxX + 1, py + 1, sz - 3, sz - 3);
+        }
+      }
+    }
+
+    // pickaxe + motion trail
+    const pick = tex.pickaxes[run.tier];
+    if (!run.over || run.core) {
+      for (let i = 0; i < this.trail.length - 1; i++) {
+        const t = this.trail[i];
+        ctx.globalAlpha = ((i + 1) / this.trail.length) * 0.25;
+        this.drawPick(pick, toX(t.x), toY(t.y), run.angle - (this.trail.length - i) * 0.05, s);
+      }
+      ctx.globalAlpha = 1;
+      this.drawPick(pick, toX(run.x), toY(run.y), run.angle, s);
+    }
+
+    // particles
+    for (const p of this.fx.parts) {
+      ctx.globalAlpha = Math.min(1, p.life / p.max + 0.2);
+      ctx.fillStyle = p.color;
+      const ps = Math.max(2, p.size * s);
+      ctx.fillRect(toX(p.x) - ps / 2, toY(p.y) - ps / 2, ps, ps);
+    }
+    ctx.globalAlpha = 1;
+    for (const r of this.fx.rings) {
+      const k = 1 - r.life / r.max;
+      ctx.strokeStyle = r.color;
+      ctx.globalAlpha = 1 - k;
+      ctx.lineWidth = s * 0.25 * (1 - k) + 1;
+      ctx.beginPath();
+      ctx.arc(toX(r.x), toY(r.y), r.r * s * (0.3 + k), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // darkness grows with depth; the pickaxe carries a light
+    const bi = biomeIndex(Math.max(0, Math.floor(run.y)));
+    const dark = [0.0, 0.25, 0.4, 0.3, 0.45, 0.6][bi] ?? 0.6;
+    if (dark > 0) {
+      const lx = toX(run.x);
+      const ly = toY(run.y);
+      const rg = ctx.createRadialGradient(lx, ly, s * 1.5, lx, ly, s * 7);
+      rg.addColorStop(0, 'rgba(0,0,0,0)');
+      rg.addColorStop(1, `rgba(0,0,0,${dark})`);
+      ctx.fillStyle = rg;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // floating texts on top of the darkness
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const t of this.fx.texts) {
+      const a = Math.min(1, (t.life / t.max) * 2);
+      ctx.globalAlpha = a;
+      const size = Math.round(t.size * s);
+      ctx.font = `${size}px "Tiny5", monospace`;
+      ctx.lineWidth = Math.max(2, size * 0.25);
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.strokeText(t.text, toX(t.x), toY(t.y));
+      ctx.fillStyle = t.color;
+      ctx.fillText(t.text, toX(t.x), toY(t.y));
+    }
+    ctx.globalAlpha = 1;
+
+    if (this.flash > 0) {
+      ctx.globalAlpha = Math.min(1, this.flash);
+      ctx.fillStyle = this.flashColor;
+      ctx.fillRect(0, 0, W, H);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  private drawPick(img: HTMLCanvasElement, x: number, y: number, angle: number, s: number): void {
+    const size = PICK_SIZE * s;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.drawImage(img, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+}
+

@@ -11,8 +11,8 @@ export const PHYS = {
   radius: 0.38,
   restitution: 0.45,
   minBounce: 5,
-  sideKickMin: 2,
-  sideKickMax: 6,
+  sideKickMin: 0.8,
+  sideKickMax: 3.5,
   breakKeep: 0.85,
   pierceKeep: 0.95,
   airDragX: 0.6,
@@ -23,6 +23,9 @@ export const PHYS = {
   impactMin: 0.6,
   impactMax: 2.0,
   critMult: 3,
+  /** Consecutive hits on the same block: +focusStep damage each, up to focusMax stacks. */
+  focusStep: 0.2,
+  focusMax: 5,
 };
 
 export const RUN = {
