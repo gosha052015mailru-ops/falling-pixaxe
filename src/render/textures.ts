@@ -202,9 +202,62 @@ function drawSpecial(ctx: CanvasRenderingContext2D, def: BlockDef): void {
       ctx.fillRect(0, 0, TEX, TEX);
       break;
     }
+    case 'rift': {
+      // a dark crack in the ice with a glowing seam running down
+      ctx.fillStyle = a;
+      ctx.fillRect(0, 0, TEX, TEX);
+      ctx.fillStyle = base;
+      ctx.fillRect(1, 1, 14, 14);
+      const seam = [7, 8, 7, 6, 7, 8, 9, 8, 7, 8, 9, 8, 7, 6];
+      seam.forEach((x, i) => {
+        px(ctx, x, i + 1, b);
+        px(ctx, x + 1, i + 1, a);
+        px(ctx, x - 1, i + 1, shade(a, -0.4));
+      });
+      [[3, 4], [12, 10], [4, 12]].forEach(([x, y]) => px(ctx, x, y, a));
+      for (let y = 11; y < 15; y++) px(ctx, 7, y, '#ffffff');
+      break;
+    }
+    case 'rune': {
+      // carved tablet with a glowing glyph
+      fillNoise(ctx, base, shade(base, 0.08), def.id, 0.2);
+      ctx.fillStyle = shade(base, -0.35);
+      ctx.fillRect(0, TEX - 1, TEX, 1);
+      ctx.fillRect(TEX - 1, 0, 1, TEX);
+      ctx.fillStyle = a;
+      ctx.fillRect(7, 2, 2, 12);
+      ctx.fillRect(4, 4, 8, 2);
+      ctx.fillRect(4, 10, 2, 2);
+      ctx.fillRect(10, 10, 2, 2);
+      ctx.fillRect(5, 7, 6, 1);
+      px(ctx, 7, 2, '#ffffff');
+      px(ctx, 2, 13, b);
+      px(ctx, 13, 2, b);
+      break;
+    }
     default:
       fillNoise(ctx, base, a, def.id);
   }
+}
+
+/** Ice: smooth gradient, a few cracks and diagonal glints. */
+function drawIce(ctx: CanvasRenderingContext2D, def: BlockDef): void {
+  const [base, a] = def.colors;
+  for (let y = 0; y < TEX; y++) {
+    for (let x = 0; x < TEX; x++) {
+      const h = hash2(x, y, def.id * 5);
+      px(ctx, x, y, h > 0.9 ? shade(base, 0.12) : (x + y) % 16 < 2 ? shade(base, 0.08) : base);
+    }
+  }
+  ctx.fillStyle = a;
+  for (let i = 0; i < 5; i++) {
+    px(ctx, 3 + i, 2 + i, a);
+    px(ctx, 9 + Math.floor(i / 2), 8 + i, a);
+  }
+  px(ctx, 2, 2, '#ffffff');
+  px(ctx, 3, 2, '#ffffff');
+  px(ctx, 2, 3, '#ffffff');
+  [[12, 3], [4, 11], [13, 13]].forEach(([x, y]) => px(ctx, x, y, shade(base, -0.2)));
 }
 
 function drawGrass(ctx: CanvasRenderingContext2D, def: BlockDef): void {
@@ -267,10 +320,22 @@ function makeBlock(def: BlockDef): Canvas {
     case 'liquid':
       drawLava(ctx, def, 0);
       break;
+    case 'ice':
+      drawIce(ctx, def);
+      break;
     default:
       fillNoise(ctx, def.colors[0], def.colors[1], def.id * 31);
       if (def.id === B.OBSIDIAN) {
         [[3, 4], [10, 9], [6, 12]].forEach(([x, y]) => px(ctx, x, y, '#a070ff'));
+      }
+      if (def.id === B.MONOLITH) {
+        // gold glyph lines carved into the black stone
+        ctx.fillStyle = def.colors[1];
+        ctx.fillRect(4, 3, 8, 1);
+        ctx.fillRect(7, 3, 1, 9);
+        ctx.fillRect(4, 12, 8, 1);
+        px(ctx, 5, 7, def.colors[1]);
+        px(ctx, 10, 7, def.colors[1]);
       }
   }
   if (def.style !== 'special' && def.style !== 'liquid' && def.style !== 'grass') bevel(ctx, def.colors[0]);

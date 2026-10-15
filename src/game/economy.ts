@@ -12,6 +12,7 @@ import {
   RUN,
   SHOP,
   UPGRADES,
+  WORLDS,
   type UpgradeDef,
   type UpgradeId,
 } from './config';
@@ -46,8 +47,35 @@ export function buyUpgrade(save: SaveData, id: UpgradeId): boolean {
   return true;
 }
 
+/** The forge can go as far as the newest open world allows. */
+export function forgeMax(save: SaveData): number {
+  return Math.min(MAX_TIER, WORLDS[Math.max(0, save.worldsOpen - 1)].maxTier);
+}
+
 export function forgeCost(save: SaveData): number | null {
-  return save.forgeTier >= MAX_TIER ? null : FORGE_COSTS[save.forgeTier];
+  return save.forgeTier >= forgeMax(save) ? null : FORGE_COSTS[save.forgeTier];
+}
+
+/** Best global depth over all worlds (offset + depth): drives prices and reward scales. */
+export function globalBest(save: SaveData): number {
+  let best = 0;
+  WORLDS.forEach((w, i) => {
+    const d = i === save.world ? save.bestDepth : save.worldSaves[i]?.bestDepth ?? 0;
+    if (d > 0 || i === 0) best = Math.max(best, w.offset + d);
+  });
+  return best;
+}
+
+/** Can this power-up be used in the active world? */
+export function boostAvailable(save: SaveData, id: BoostId): boolean {
+  const w = BOOSTS[id].world;
+  return w === undefined || w === save.world;
+}
+
+/** The power-up's home world is open (it can be bought, even while playing elsewhere). */
+export function boostOpen(save: SaveData, id: BoostId): boolean {
+  const w = BOOSTS[id].world;
+  return w === undefined || w < save.worldsOpen;
 }
 
 export function buyForge(save: SaveData): boolean {
@@ -89,7 +117,7 @@ export function buyMega(save: SaveData, id: MegaId): boolean {
 
 /** Coin rewards and item prices scale with progress so they always feel like 1–2 runs of income. */
 export function rewardScale(save: SaveData): number {
-  return Math.round(60 * Math.pow(1 + save.bestDepth / 15, 1.9));
+  return Math.round(60 * Math.pow(1 + globalBest(save) / 15, 1.9));
 }
 
 export function dashDownCost(save: SaveData): number | null {
@@ -120,6 +148,7 @@ export function boostCost(save: SaveData, id: BoostId): number {
 
 export function buyBoost(save: SaveData, id: BoostId): boolean {
   if (id === 'dynamite') return buyDynamite(save);
+  if (!boostOpen(save, id)) return false;
   const cost = boostCost(save, id);
   if (save.coins < cost) return false;
   save.coins -= cost;
@@ -134,7 +163,7 @@ export function toggleLoadout(save: SaveData, id: BoostId, max: number): boolean
     save.loadout.splice(i, 1);
     return true;
   }
-  if (save.loadout.length >= max) return false;
+  if (save.loadout.length >= max || !boostAvailable(save, id)) return false;
   save.loadout.push(id);
   return true;
 }
@@ -175,7 +204,8 @@ export function doPrestige(save: SaveData): number {
   save.coins = 0;
   save.cycleCoins = 0;
   save.upgrades = freshUpgrades();
-  save.forgeTier = 0;
+  // pickaxes earned at a world's Core are kept
+  save.forgeTier = WORLDS[Math.max(0, save.worldsOpen - 1)].baseTier;
   save.startDepth = 0;
   return gained;
 }
@@ -211,6 +241,10 @@ export interface RunStats {
   dashDownBlocks: number;
   /** Power-ups brought into the run (dynamite is `dynamite`). */
   boosts: Partial<Record<Exclude<BoostId, 'dynamite'>, number>>;
+  /** World index (see WORLDS). */
+  world: number;
+  /** Highest tier workbenches may reach in this world. */
+  maxTier: number;
 }
 
 export function deriveStats(save: SaveData): RunStats {
@@ -231,13 +265,17 @@ export function deriveStats(save: SaveData): RunStats {
     nudgeRegen: 4.5 * Math.pow(0.92, u.control),
     blastRadius: RUN.dynamiteRadius + RUN.dynamiteRadiusPerLvl * u.blast,
     maxFallMult: 1 + 0.04 * u.weight,
-    startTier: save.forgeTier,
+    startTier: Math.max(save.forgeTier, WORLDS[save.world].baseTier),
     dynamite: save.loadout.includes('dynamite') ? Math.min(save.dynamite, SHOP.maxDynamitePerRun) : 0,
     totems: Math.min(save.totems, 1),
     startDepth: save.startDepth,
     dashDownBlocks: save.dashDown > 0 ? DASH_DOWN.blocks[save.dashDown - 1] : 0,
     boosts: Object.fromEntries(
-      save.loadout.filter((id) => id !== 'dynamite').map((id) => [id, Math.min(save.boosts[id as Exclude<BoostId, 'dynamite'>] ?? 0, BOOSTS[id].perRun)]),
+      save.loadout
+        .filter((id) => id !== 'dynamite' && boostAvailable(save, id))
+        .map((id) => [id, Math.min(save.boosts[id as Exclude<BoostId, 'dynamite'>] ?? 0, BOOSTS[id].perRun)]),
     ),
+    world: save.world,
+    maxTier: Math.max(save.forgeTier, WORLDS[Math.max(save.world, save.worldsOpen - 1)].maxTier),
   };
 }

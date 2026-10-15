@@ -105,6 +105,14 @@ export const TIERS: TierDef[] = [
   { key: 'diamond', dmg: 12, dur: 3.6, coinBonus: 0, critBonus: 0, fireproof: false, colors: { head: '#6ff3f0', edge: '#2ab7c4', handle: '#6b4423' } },
   { key: 'obsidian', dmg: 20, dur: 4.6, coinBonus: 0, critBonus: 0, fireproof: true, colors: { head: '#5b2d8a', edge: '#2a1240', handle: '#3a2a1a' } },
   { key: 'star', dmg: 35, dur: 6.0, coinBonus: 0.25, critBonus: 0.1, fireproof: true, colors: { head: '#fff7a8', edge: '#ff7ad9', handle: '#4a3aa8' } },
+  // ── world 2: Frost ──
+  { key: 'frost', dmg: 55, dur: 7.4, coinBonus: 0.25, critBonus: 0.1, fireproof: true, colors: { head: '#d9f2ff', edge: '#6fb8ff', handle: '#2c4f7a' } },
+  { key: 'mithril', dmg: 85, dur: 9.2, coinBonus: 0.25, critBonus: 0.12, fireproof: true, colors: { head: '#b6fff0', edge: '#3fbfa8', handle: '#2c4f7a' } },
+  { key: 'aurora', dmg: 130, dur: 11.5, coinBonus: 0.35, critBonus: 0.12, fireproof: true, colors: { head: '#8affc1', edge: '#c77dff', handle: '#1d2f5a' } },
+  // ── world 3: Ruins ──
+  { key: 'ancient', dmg: 200, dur: 14.5, coinBonus: 0.35, critBonus: 0.14, fireproof: true, colors: { head: '#ffd23f', edge: '#b88440', handle: '#4a2f1a' } },
+  { key: 'runic', dmg: 310, dur: 18, coinBonus: 0.4, critBonus: 0.15, fireproof: true, colors: { head: '#6ff3f0', edge: '#ffd23f', handle: '#2a1f3a' } },
+  { key: 'solar', dmg: 480, dur: 22.5, coinBonus: 0.5, critBonus: 0.18, fireproof: true, colors: { head: '#fff2a8', edge: '#ff7a1a', handle: '#7a2a10' } },
 ];
 export const MAX_TIER = TIERS.length - 1;
 
@@ -138,7 +146,7 @@ export const UPGRADES: UpgradeDef[] = [
 ];
 
 /** Forge: cost to raise starting tier to index i+1. */
-export const FORGE_COSTS = [500, 3000, 15000, 100000, 600000, 4000000, 25000000];
+export const FORGE_COSTS = [500, 3000, 15000, 100000, 600000, 4000000, 25000000, 8000000, 25000000, 60000000, 120000000, 300000000, 700000000];
 
 export const SHOP = {
   dynamiteBase: 60,
@@ -174,9 +182,10 @@ export const DASH_DOWN = {
  * into a run (loadout), each with a per-run cap. Price = rewardScale × price (always ~a
  * fraction of one run's income, see GAME_DESIGN §6.12).
  */
-export type BoostId = 'dynamite' | 'giant' | 'twin' | 'teleport' | 'shield';
-export const BOOST_IDS: BoostId[] = ['dynamite', 'giant', 'twin', 'teleport', 'shield'];
-export const BOOSTS: Record<BoostId, { price: number; perRun: number; time?: number }> = {
+export type BoostId = 'dynamite' | 'giant' | 'twin' | 'teleport' | 'shield' | 'magnet' | 'meteor';
+export const BOOST_IDS: BoostId[] = ['dynamite', 'giant', 'twin', 'teleport', 'shield', 'magnet', 'meteor'];
+/** `world` = the only world where this power-up works (world-exclusive). */
+export const BOOSTS: Record<BoostId, { price: number; perRun: number; time?: number; world?: number }> = {
   dynamite: { price: 0, perRun: 5 },
   /** Giant pickaxe: bigger, ×2.5 damage, hits 2 more blocks per strike. */
   giant: { price: 0.6, perRun: 2, time: 7 },
@@ -186,6 +195,10 @@ export const BOOSTS: Record<BoostId, { price: number; perRun: number; time?: num
   teleport: { price: 0.7, perRun: 2 },
   /** Shield: no durability loss at all. */
   shield: { price: 0.6, perRun: 2, time: 8 },
+  /** Frost only: pulls in and mines every ore around the pickaxe. */
+  magnet: { price: 0.9, perRun: 2, time: 8, world: 1 },
+  /** Ruins only: the pickaxe turns into a meteor and smashes a 3-wide shaft straight down. */
+  meteor: { price: 1, perRun: 2, time: 2.2, world: 2 },
 };
 export const LOADOUT_SIZE = 3;
 export const BOOST_FX = {
@@ -194,6 +207,24 @@ export const BOOST_FX = {
   giantRadius: 1.7,
   twinCount: 2,
   teleportBlocks: [10, 16] as [number, number],
+  magnetRadius: 2.8,
+  magnetEvery: 0.12,
+  meteorSpeed: 15,
+  /** Columns smashed on each side of the meteor. */
+  meteorHalf: 1,
+};
+
+/** Ice rift (Frost): the pickaxe plunges straight down through this many blocks, for free. */
+export const RIFT = { blocks: 9, speed: 20 };
+
+/** Runes (Ruins): breaking one grants a random short blessing. */
+export type RuneId = 'might' | 'gold' | 'ward' | 'mend';
+export const RUNES: { weights: Record<RuneId, number>; time: number; might: number; gold: number; mend: number } = {
+  weights: { might: 3, gold: 3, ward: 2, mend: 2 },
+  time: 6,
+  might: 2.5,
+  gold: 2,
+  mend: 0.25,
 };
 
 /** Fast-forward unlocks during a run: [seconds of falling, speed]. */
@@ -258,12 +289,16 @@ export interface BiomeDef {
   special: Partial<Record<SpecialSpawn, number>>;
   lavaInCaves?: number;
   bedrockChance?: number;
+  /** Ruins: chance per row of an ancient vault (a strip of the best ore with a chest). */
+  vaultChance?: number;
   bg: [string, string];
   milestoneCoins: number;
   milestoneGems: number;
 }
 
-export type SpecialSpawn = 'workbench' | 'anvil' | 'tnt' | 'chest' | 'furnace' | 'enchant' | 'slime' | 'luckgem';
+export type SpecialSpawn = 'workbench' | 'anvil' | 'tnt' | 'chest' | 'furnace' | 'enchant' | 'slime' | 'luckgem' | 'rift' | 'rune';
+/** These only spawn where a biome asks for them (multiplier defaults to 0). */
+export const SPECIAL_OPT_IN: SpecialSpawn[] = ['slime', 'rift', 'rune'];
 
 /** Base per-cell spawn probabilities. */
 export const SPECIAL_BASE: Record<SpecialSpawn, number> = {
@@ -275,6 +310,8 @@ export const SPECIAL_BASE: Record<SpecialSpawn, number> = {
   enchant: 0.0012,
   slime: 0.004,
   luckgem: 0.0008,
+  rift: 0.003,
+  rune: 0.003,
 };
 
 export const SPECIAL_BLOCK: Record<SpecialSpawn, B> = {
@@ -286,6 +323,8 @@ export const SPECIAL_BLOCK: Record<SpecialSpawn, B> = {
   enchant: B.ENCHANT,
   slime: B.SLIME,
   luckgem: B.LUCKGEM,
+  rift: B.RIFT,
+  rune: B.RUNE,
 };
 
 export const BIOMES: BiomeDef[] = [
@@ -333,21 +372,150 @@ export const BIOMES: BiomeDef[] = [
   },
 ];
 
-/** Biome boundaries that act as elevator checkpoints. */
-export const CHECKPOINTS = BIOMES.slice(1).map((b) => b.from);
+export const FROST_BIOMES: BiomeDef[] = [
+  {
+    key: 'tundra', from: 0, to: 100,
+    base: [{ item: B.SNOW, w: 8 }, { item: B.ICE, w: 3 }],
+    oreChance: 0.07, ores: [{ item: B.FROSTITE, w: 1 }],
+    cave: 0.72, special: { rift: 0.6 },
+    bg: ['#2a3a52', '#1a2638'], milestoneCoins: 0, milestoneGems: 0,
+  },
+  {
+    key: 'icecaves', from: 100, to: 300,
+    base: [{ item: B.ICE, w: 10 }, { item: B.PERMAFROST, w: 3 }],
+    oreChance: 0.08, ores: [{ item: B.FROSTITE, w: 5 }, { item: B.SILVER, w: 3 }],
+    cave: 0.66, special: { rift: 1 },
+    bg: ['#1d3550', '#10202f'], milestoneCoins: 200000, milestoneGems: 15,
+  },
+  {
+    key: 'permafrost', from: 300, to: 550,
+    base: [{ item: B.PERMAFROST, w: 10 }, { item: B.BLUEICE, w: 2 }],
+    oreChance: 0.09, ores: [{ item: B.SILVER, w: 5 }, { item: B.MITHRIL, w: 3 }, { item: B.FROSTITE, w: 2 }],
+    cave: 0.65, special: { rift: 1, tnt: 1.2 },
+    bg: ['#1c2638', '#0f1622'], milestoneCoins: 300000, milestoneGems: 18,
+  },
+  {
+    key: 'glacier', from: 550, to: 800,
+    base: [{ item: B.BLUEICE, w: 10 }, { item: B.GLACIER, w: 0.6 }],
+    oreChance: 0.09, ores: [{ item: B.MITHRIL, w: 4 }, { item: B.AURORITE, w: 2 }, { item: B.SILVER, w: 2 }],
+    cave: 0.64, special: { rift: 1.2, enchant: 1.4 },
+    bg: ['#14304f', '#081a2e'], milestoneCoins: 450000, milestoneGems: 22,
+  },
+  {
+    key: 'frostabyss', from: 800, to: CAMPAIGN_DEPTH,
+    base: [{ item: B.FROSTSTONE, w: 10 }, { item: B.GLACIER, w: 1 }],
+    oreChance: 0.08, ores: [{ item: B.AURORITE, w: 3 }, { item: B.ICEHEART, w: 1 }, { item: B.MITHRIL, w: 3 }],
+    cave: 0.62, special: { rift: 1.4, workbench: 1.3, anvil: 1.3 }, bedrockChance: 0.01,
+    bg: ['#0c1626', '#04080f'], milestoneCoins: 600000, milestoneGems: 26,
+  },
+];
+
+export const RUINS_BIOMES: BiomeDef[] = [
+  {
+    key: 'dunes', from: 0, to: 100,
+    base: [{ item: B.SAND, w: 8 }, { item: B.SANDSTONE, w: 3 }],
+    oreChance: 0.07, ores: [{ item: B.RELICGOLD, w: 1 }],
+    cave: 0.72, special: { rune: 0.6 },
+    bg: ['#4a3420', '#2e2014'], milestoneCoins: 0, milestoneGems: 0,
+  },
+  {
+    key: 'catacombs', from: 100, to: 300,
+    base: [{ item: B.SANDSTONE, w: 6 }, { item: B.RUINBRICK, w: 6 }],
+    oreChance: 0.08, ores: [{ item: B.RELICGOLD, w: 5 }, { item: B.JADE, w: 3 }],
+    cave: 0.66, special: { rune: 1, chest: 1.3 }, vaultChance: 0.02,
+    bg: ['#3a2a1e', '#22180f'], milestoneCoins: 700000, milestoneGems: 30,
+  },
+  {
+    key: 'temple', from: 300, to: 550,
+    base: [{ item: B.RUINBRICK, w: 10 }, { item: B.JADESTONE, w: 3 }],
+    oreChance: 0.09, ores: [{ item: B.JADE, w: 5 }, { item: B.TOPAZ, w: 3 }, { item: B.RELICGOLD, w: 2 }],
+    cave: 0.65, special: { rune: 1.2, tnt: 1.3 }, vaultChance: 0.025,
+    bg: ['#2a2a1a', '#18180c'], milestoneCoins: 900000, milestoneGems: 35,
+  },
+  {
+    key: 'sunken', from: 550, to: 800,
+    base: [{ item: B.JADESTONE, w: 10 }, { item: B.TEMPLESTONE, w: 3 }],
+    oreChance: 0.09, ores: [{ item: B.TOPAZ, w: 4 }, { item: B.SUNSTONE, w: 2 }, { item: B.JADE, w: 2 }],
+    cave: 0.64, special: { rune: 1.3, enchant: 1.4 }, vaultChance: 0.03,
+    bg: ['#163028', '#0a1a14'], milestoneCoins: 1100000, milestoneGems: 40,
+  },
+  {
+    key: 'sanctum', from: 800, to: CAMPAIGN_DEPTH,
+    base: [{ item: B.TEMPLESTONE, w: 10 }, { item: B.MONOLITH, w: 1 }],
+    oreChance: 0.08, ores: [{ item: B.SUNSTONE, w: 3 }, { item: B.RELIC, w: 1 }, { item: B.TOPAZ, w: 3 }],
+    cave: 0.62, special: { rune: 1.5, workbench: 1.3, anvil: 1.3 }, bedrockChance: 0.01, vaultChance: 0.03,
+    bg: ['#1e1428', '#0c0814'], milestoneCoins: 1300000, milestoneGems: 45,
+  },
+];
 
 /**
- * Elevator stops are bought (after the depth is reached). Prices follow the coin curve:
- * roughly 3–5 runs of income at the stage where the stop becomes reachable.
+ * Worlds: three big campaigns, each 1000 m with its own biomes, blocks, pickaxes, a
+ * world-exclusive power-up and its own mechanic. A world opens when the previous one's Core
+ * is reached. Block HP repeats the world-1 shape × `hp`; coin value follows the GLOBAL depth
+ * (offset + depth), so income keeps climbing from world to world.
  */
-export const LIFT_COSTS: Record<number, number> = { 20: 300, 100: 6000, 250: 60000, 450: 300000, 700: 1500000 };
-export const CORE_REWARD = { coins: 500000, gems: 50 };
-
-export function biomeAt(depth: number): BiomeDef {
-  for (const b of BIOMES) if (depth < b.to) return b;
-  return BIOMES[BIOMES.length - 1];
+export interface WorldDef {
+  key: 'earth' | 'frost' | 'ruins';
+  biomes: BiomeDef[];
+  offset: number;
+  /** Extra block HP multiplier on top of the global depth curve (tuned by `npm run sim`). */
+  hp: number;
+  /** Highest pickaxe tier the forge / workbenches reach while this world is the frontier. */
+  maxTier: number;
+  /** Free starting pickaxe in this world (the best one of the previous world). */
+  baseTier: number;
+  core: { coins: number; gems: number };
+  /** Elevator stop prices (stops are the biome boundaries). */
+  lift: Record<number, number>;
+  /** Durability cost multiplier of every hit (later tiers carry far more max durability). */
+  wear: number;
+  /** UI accent and the sky colour above the surface. */
+  color: string;
+  sky: [number, number, number];
 }
-export function biomeIndex(depth: number): number {
-  for (let i = 0; i < BIOMES.length; i++) if (depth < BIOMES[i].to) return i;
-  return BIOMES.length - 1;
+
+export const WORLDS: WorldDef[] = [
+  {
+    key: 'earth', biomes: BIOMES, offset: 0, hp: 1, wear: 1, maxTier: 7, baseTier: 0,
+    core: { coins: 500000, gems: 50 },
+    lift: { 20: 300, 100: 6000, 250: 60000, 450: 300000, 700: 1500000 },
+    color: '#7ccf4a', sky: [110, 180, 240],
+  },
+  {
+    key: 'frost', biomes: FROST_BIOMES, offset: 1000, hp: 0.9, wear: 3.5, maxTier: 10, baseTier: 7,
+    core: { coins: 2500000, gems: 120 },
+    lift: { 100: 500000, 300: 1500000, 550: 4000000, 800: 9000000 },
+    color: '#6fb8ff', sky: [170, 210, 245],
+  },
+  {
+    key: 'ruins', biomes: RUINS_BIOMES, offset: 2000, hp: 1.45, wear: 7, maxTier: 13, baseTier: 10,
+    core: { coins: 8000000, gems: 250 },
+    lift: { 100: 2000000, 300: 6000000, 550: 14000000, 800: 30000000 },
+    color: '#ffb347', sky: [245, 190, 120],
+  },
+];
+
+export function biomesOf(world = 0): BiomeDef[] {
+  return WORLDS[world]?.biomes ?? BIOMES;
+}
+
+/** Biome boundaries that act as elevator checkpoints (world 1). */
+export const CHECKPOINTS = BIOMES.slice(1).map((b) => b.from);
+export function checkpointsOf(world = 0): number[] {
+  return biomesOf(world).slice(1).map((b) => b.from);
+}
+
+/** Elevator stop prices of world 1 (see WorldDef.lift for the others). */
+export const LIFT_COSTS: Record<number, number> = WORLDS[0].lift;
+export const CORE_REWARD = WORLDS[0].core;
+
+export function biomeAt(depth: number, world = 0): BiomeDef {
+  const list = biomesOf(world);
+  for (const b of list) if (depth < b.to) return b;
+  return list[list.length - 1];
+}
+export function biomeIndex(depth: number, world = 0): number {
+  const list = biomesOf(world);
+  for (let i = 0; i < list.length; i++) if (depth < list[i].to) return i;
+  return list.length - 1;
 }

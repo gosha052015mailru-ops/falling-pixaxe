@@ -30,6 +30,32 @@ export enum B {
   LUCKGEM,
   LAVA,
   CORE,
+  // ── world 2: Frost ──
+  SNOW,
+  ICE,
+  PERMAFROST,
+  BLUEICE,
+  FROSTSTONE,
+  GLACIER,
+  FROSTITE,
+  SILVER,
+  MITHRIL,
+  AURORITE,
+  ICEHEART,
+  RIFT,
+  // ── world 3: Ruins ──
+  SAND,
+  SANDSTONE,
+  RUINBRICK,
+  JADESTONE,
+  TEMPLESTONE,
+  MONOLITH,
+  RELICGOLD,
+  JADE,
+  TOPAZ,
+  SUNSTONE,
+  RELIC,
+  RUNE,
 }
 
 export type Special =
@@ -41,9 +67,13 @@ export type Special =
   | 'enchant'
   | 'slime'
   | 'luckgem'
-  | 'core';
+  | 'core'
+  /** Frost: an ice rift — the pickaxe plunges straight down through it. */
+  | 'rift'
+  /** Ruins: an ancient rune — a random short blessing. */
+  | 'rune';
 
-export type TextureStyle = 'plain' | 'grass' | 'ore' | 'gem' | 'special' | 'liquid' | 'bricks';
+export type TextureStyle = 'plain' | 'grass' | 'ore' | 'gem' | 'special' | 'liquid' | 'bricks' | 'ice';
 
 export interface BlockDef {
   id: B;
@@ -61,6 +91,8 @@ export interface BlockDef {
   special?: Special;
   /** Is it an "ore" (affected by furnace / fortune enchant). */
   ore?: boolean;
+  /** Ice: the pickaxe skids sideways on it instead of bouncing up. */
+  slippery?: boolean;
   /** Texture: base color, accent color(s). */
   colors: [string, string, string?];
   style: TextureStyle;
@@ -120,6 +152,32 @@ const defs: BlockDef[] = [
   d(B.SLIME, 'slime', 3, 3, ['#6bd66b', '#9cff9c', '#3a9a3a'], 'special', { special: 'slime', durCost: 0 }),
   d(B.LUCKGEM, 'luckgem', 1, 0, ['#45434f', '#ff66d9', '#ffffff'], 'gem', { special: 'luckgem', durCost: 0 }),
   d(B.LAVA, 'lava', 0, 0, ['#ff5a00', '#ffb300'], 'liquid', { solid: false, liquid: true, blastable: false, durCost: 0 }),
+  // ── world 2: Frost (HP/value continue the global depth curve, see WorldDef.offset; narrower base spread) ──
+  d(B.SNOW, 'snow', 50, 3, ['#e8f1ff', '#ffffff', '#b8cde8'], 'grass'),
+  d(B.ICE, 'ice', 55, 4, ['#9fd8ff', '#d9f2ff'], 'ice', { slippery: true }),
+  d(B.PERMAFROST, 'permafrost', 50, 8, ['#5d6f86', '#8fb3d1'], 'bricks', { durCost: 2 }),
+  d(B.BLUEICE, 'blueice', 50, 12, ['#3f8fe0', '#9fd8ff'], 'ice', { slippery: true, durCost: 3 }),
+  d(B.FROSTSTONE, 'froststone', 50, 20, ['#34405e', '#5d79a8'], 'bricks', { durCost: 4 }),
+  d(B.GLACIER, 'glacier', 65, 30, ['#1d4f8a', '#7cc8ff'], 'ice', { durCost: 6, blastable: false, slippery: true }),
+  d(B.FROSTITE, 'frostite', 45, 40, ['#8fb3d1', '#6ff3f0', '#2ab7c4'], 'ore', { ore: true }),
+  d(B.SILVER, 'silver', 50, 60, ['#5d6f86', '#f4f7ff', '#a9b6c9'], 'ore', { ore: true, durCost: 2 }),
+  d(B.MITHRIL, 'mithril', 50, 140, ['#34405e', '#b6fff0', '#5fd6c0'], 'gem', { ore: true, durCost: 3 }),
+  d(B.AURORITE, 'aurorite', 55, 260, ['#34405e', '#8affc1', '#c77dff'], 'gem', { ore: true, durCost: 4 }),
+  d(B.ICEHEART, 'iceheart', 90, 650, ['#1d4f8a', '#ffffff', '#6ff3f0'], 'gem', { ore: true, durCost: 5 }),
+  d(B.RIFT, 'rift', 1, 0, ['#0b2a4a', '#6ff3f0', '#ffffff'], 'special', { special: 'rift', durCost: 0 }),
+  // ── world 3: Ruins ──
+  d(B.SAND, 'sand', 70, 5, ['#e8c27a', '#f6dca0', '#c9a05a'], 'grass'),
+  d(B.SANDSTONE, 'sandstone', 75, 7, ['#d6a35e', '#b88440'], 'bricks'),
+  d(B.RUINBRICK, 'ruinbrick', 75, 12, ['#8a6a4a', '#6b4f36'], 'bricks', { durCost: 2 }),
+  d(B.JADESTONE, 'jadestone', 85, 20, ['#2f5d4a', '#4f8a6e'], 'bricks', { durCost: 3 }),
+  d(B.TEMPLESTONE, 'templestone', 110, 30, ['#4a3a5e', '#7a5f8f'], 'bricks', { durCost: 4 }),
+  d(B.MONOLITH, 'monolith', 180, 40, ['#1e1a24', '#ffd23f'], 'plain', { durCost: 6, blastable: false }),
+  d(B.RELICGOLD, 'relicgold', 70, 120, ['#b88440', '#ffd23f', '#ff9f1a'], 'ore', { ore: true }),
+  d(B.JADE, 'jade', 75, 200, ['#6b4f36', '#3dff8a', '#14a352'], 'gem', { ore: true, durCost: 2 }),
+  d(B.TOPAZ, 'topaz', 85, 350, ['#2f5d4a', '#ffb347', '#ff7a1a'], 'gem', { ore: true, durCost: 3 }),
+  d(B.SUNSTONE, 'sunstone', 110, 600, ['#4a3a5e', '#fff2a8', '#ff7a1a'], 'gem', { ore: true, durCost: 4 }),
+  d(B.RELIC, 'relic', 200, 1500, ['#1e1a24', '#ffd23f', '#ff66d9'], 'gem', { ore: true, durCost: 5 }),
+  d(B.RUNE, 'rune', 1, 0, ['#2a1f3a', '#ffd23f', '#6ff3f0'], 'special', { special: 'rune', durCost: 0 }),
   d(B.CORE, 'core', 1, 0, ['#fff2a8', '#ff7ad9', '#ffffff'], 'special', { special: 'core', durCost: 0, blastable: false }),
 ];
 for (const def of defs) BLOCKS[def.id] = def;

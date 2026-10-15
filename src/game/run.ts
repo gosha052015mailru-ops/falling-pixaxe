@@ -6,22 +6,25 @@ import {
   CAMPAIGN_DEPTH,
   MINE_EVENTS,
   type MineEventId,
-  BIOMES,
-  CORE_REWARD,
   ENCHANTS,
   MAX_TIER,
   PHYS,
+  RIFT,
   RUN,
+  RUNES,
   TIERS,
+  WORLDS,
   biomeAt,
+  biomesOf,
   type EnchantId,
+  type RuneId,
 } from './config';
 import type { RunStats } from './economy';
 import { Rng } from './rng';
-import { World, blockHp } from './world';
+import { World } from './world';
 
 export type ChestLoot = 'coins' | 'gems' | 'dynamite' | 'durability';
-export type BreakCause = 'pick' | 'blast' | 'twin';
+export type BreakCause = 'pick' | 'blast' | 'twin' | 'magnet';
 
 /** A ghost pickaxe split off by the Twin power-up: mines on its own, never wears. */
 export interface Twin {
@@ -62,7 +65,11 @@ export type GameEvent =
   | { t: 'boost'; id: BoostId; x: number; y: number }
   | { t: 'teleport'; x0: number; y0: number; x: number; y: number; dist: number }
   | { t: 'boostEnd'; id: BoostId }
-  | { t: 'twinPoof'; x: number; y: number };
+  | { t: 'twinPoof'; x: number; y: number }
+  | { t: 'rift'; x: number; y: number }
+  | { t: 'rune'; id: RuneId; x: number; y: number }
+  | { t: 'magnet'; x0: number; y0: number; x: number; y: number }
+  | { t: 'skid'; x: number; y: number; dir: number };
 
 export interface RunInit {
   seed: number;
@@ -109,6 +116,8 @@ export interface RunResult {
   enchantsGot: number;
   slimes: number;
   crits: number;
+  rifts: number;
+  runes: number;
   oreCounts: Record<string, number>;
   boostsUsed: Partial<Record<BoostId, number>>;
 }
@@ -185,6 +194,8 @@ export class Run {
   enchantsGot = 0;
   slimes = 0;
   crits = 0;
+  rifts = 0;
+  runes = 0;
   oreCounts: Record<string, number> = {};
 
   /** Power-ups brought into this run (dynamite lives in `dynamite`). */
@@ -194,6 +205,11 @@ export class Run {
   shieldTimer = 0;
   twinTimer = 0;
   twins: Twin[] = [];
+  magnetTimer = 0;
+  meteorTimer = 0;
+  /** Rune of Might: extra damage while > 0. */
+  mightTimer = 0;
+  private magnetTick = 0;
   private bouncesSinceBreak = 0;
 
   events: GameEvent[] = [];
@@ -206,7 +222,7 @@ export class Run {
   constructor(readonly init: RunInit) {
     this.stats = init.stats;
     this.rng = new Rng(init.seed);
-    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.tutorial ? 1 : init.stats.hpMult, init.stats.worldWidth);
+    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.tutorial ? 1 : init.stats.hpMult, init.stats.worldWidth, init.stats.world ?? 0);
     this.x = this.world.width / 2;
     this.y = init.stats.startDepth - 3;
     this.vx = this.rng.range(-1.5, 1.5);
@@ -249,7 +265,15 @@ export class Run {
   /** Highest tier workbenches can reach in this run. */
   get workbenchCap(): number {
     const st = this.stats.startTier;
-    return Math.min(MAX_TIER, st + RUN.workbenchTierCap + Math.floor(st / 3));
+    const cap = Math.min(this.stats.maxTier ?? MAX_TIER, MAX_TIER);
+    // past the star pickaxe the new tiers are forged: a workbench gives at most one step
+    const bonus = st >= WORLDS[0].maxTier ? RUN.workbenchTierCap : RUN.workbenchTierCap + Math.floor(st / 3);
+    return Math.max(st, Math.min(cap, st + bonus));
+  }
+
+  /** World index of this run. */
+  get worldIdx(): number {
+    return this.stats.world ?? 0;
   }
 
   // ───────────────────────── mine events ─────────────────────────
@@ -286,7 +310,7 @@ export class Run {
         this.superTimer = MINE_EVENTS.superTime;
         break;
       case 'oreVein': {
-        const biome = biomeAt(py + 3);
+        const biome = biomeAt(py + 3, this.worldIdx);
         const best = [...biome.ores].sort((a, b) => blockDef(b.item).value - blockDef(a.item).value)[0].item;
         let n = 0;
         for (let cy = py + 2; cy <= py + 5 && n < 8; cy++) for (let cx = px - 2; cx <= px + 2 && n < 8; cx++) if (solidHere(cx, cy) && this.rng.chance(0.6)) {
@@ -351,7 +375,7 @@ export class Run {
   }
 
   get damagePerHit(): number {
-    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency) * (this.fever ? RUN.feverDamage : 1) * (this.superTimer > 0 ? MINE_EVENTS.superDamage : 1) * (this.giantTimer > 0 ? BOOST_FX.giantDamage : 1);
+    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency) * (this.fever ? RUN.feverDamage : 1) * (this.superTimer > 0 ? MINE_EVENTS.superDamage : 1) * (this.giantTimer > 0 ? BOOST_FX.giantDamage : 1) * (this.mightTimer > 0 ? RUNES.might : 1);
   }
 
   /** Collision radius (the Giant power-up makes the pickaxe bigger). */
@@ -461,7 +485,20 @@ export class Run {
 
   /** Is this power-up still running (for the HUD)? */
   boostActive(id: BoostId): number {
-    return id === 'giant' ? this.giantTimer : id === 'shield' ? this.shieldTimer : id === 'twin' ? this.twinTimer : 0;
+    switch (id) {
+      case 'giant':
+        return this.giantTimer;
+      case 'shield':
+        return this.shieldTimer;
+      case 'twin':
+        return this.twinTimer;
+      case 'magnet':
+        return this.magnetTimer;
+      case 'meteor':
+        return this.meteorTimer;
+      default:
+        return 0;
+    }
   }
 
   useBoost(id: BoostId): boolean {
@@ -490,8 +527,81 @@ export class Run {
       case 'teleport':
         this.teleport();
         break;
+      case 'magnet':
+        this.magnetTimer = time;
+        this.magnetTick = 0;
+        break;
+      case 'meteor':
+        this.endDash();
+        this.meteorTimer = time;
+        this.x = Math.floor(this.x) + 0.5;
+        this.slow(0.3, 0.4);
+        break;
     }
     return true;
+  }
+
+  /** Ice rift: a free straight plunge that smashes everything blastable on the way. */
+  private plunge(): void {
+    this.dashVx = 0;
+    this.dashVy = RIFT.speed;
+    this.dashLeft = RIFT.blocks;
+    this.dashTimer = (RIFT.blocks + 1.5) / RIFT.speed + 0.05;
+    this.dashDamage = 1e12;
+    this.dashBroken = 0;
+    this.x = Math.floor(this.x) + 0.5;
+    this.vx = 0;
+    this.vy = RIFT.speed;
+    this.angVel = 22;
+  }
+
+  /** Magnet: every tick the nearest ore around the pickaxe is pulled out and mined. */
+  private updateMagnet(dt: number): void {
+    this.magnetTick -= dt;
+    if (this.magnetTick > 0) return;
+    this.magnetTick = BOOST_FX.magnetEvery;
+    const r = BOOST_FX.magnetRadius;
+    let best: [number, number] | null = null;
+    let bestD = Infinity;
+    for (let cy = Math.floor(this.y - r); cy <= Math.floor(this.y + r); cy++) {
+      for (let cx = Math.floor(this.x - r); cx <= Math.floor(this.x + r); cx++) {
+        if (this.world.isWall(cx)) continue;
+        if (!blockDef(this.world.get(cx, cy)).ore) continue;
+        const d = Math.hypot(cx + 0.5 - this.x, cy + 0.5 - this.y);
+        if (d <= r && d < bestD) {
+          bestD = d;
+          best = [cx, cy];
+        }
+      }
+    }
+    if (!best) return;
+    this.emit({ t: 'magnet', x0: this.x, y0: this.y, x: best[0] + 0.5, y: best[1] + 0.5 });
+    this.breakBlock(best[0], best[1], 'magnet', false);
+  }
+
+  /** Meteor: a burning straight fall that clears a 3-wide shaft; only unblastable rock stops it. */
+  private meteorStep(h: number): void {
+    this.vx = 0;
+    this.vy = BOOST_FX.meteorSpeed;
+    const lead = Math.floor(this.y + this.radius + this.vy * h);
+    const cx0 = Math.floor(this.x);
+    for (let cy = Math.floor(this.y); cy <= lead; cy++) {
+      for (let cx = cx0 - BOOST_FX.meteorHalf; cx <= cx0 + BOOST_FX.meteorHalf; cx++) {
+        if (this.world.isWall(cx)) continue;
+        const def = blockDef(this.world.get(cx, cy));
+        if (!def.solid) continue;
+        if (def.special || (def.blastable && Number.isFinite(def.hp))) this.breakBlock(cx, cy, 'pick', false);
+        else if (cx === cx0) {
+          // monolith / bedrock right below: the meteor crashes here
+          this.meteorTimer = 0;
+          this.vy = 2;
+          this.emit({ t: 'boostEnd', id: 'meteor' });
+          this.emit({ t: 'explode', x: this.x, y: this.y + 0.6, r: 1.8, chain: 0 });
+          return;
+        }
+        if (this.over) return;
+      }
+    }
   }
 
   /** Blink straight down through the rock; the landing spot is carved out. */
@@ -552,6 +662,12 @@ export class Run {
     if (this.giantTimer > 0 && (this.giantTimer -= dt) <= 0) this.emit({ t: 'boostEnd', id: 'giant' });
     if (this.shieldTimer > 0 && (this.shieldTimer -= dt) <= 0) this.emit({ t: 'boostEnd', id: 'shield' });
     if (this.twinTimer > 0) this.twinTimer -= dt;
+    if (this.mightTimer > 0) this.mightTimer -= dt;
+    if (this.magnetTimer > 0 && (this.magnetTimer -= dt) <= 0) this.emit({ t: 'boostEnd', id: 'magnet' });
+    if (this.meteorTimer > 0 && (this.meteorTimer -= dt) <= 0) {
+      this.vy = Math.min(this.vy, 4);
+      this.emit({ t: 'boostEnd', id: 'meteor' });
+    }
     if (this.nudges < this.stats.nudgeCharges) {
       this.nudgeTimer += dt;
       if (this.nudgeTimer >= this.stats.nudgeRegen) {
@@ -569,6 +685,7 @@ export class Run {
     const h = dt / steps;
     for (let i = 0; i < steps && !this.over; i++) this.substep(h);
     if (this.twins.length) this.updateTwins(dt);
+    if (this.magnetTimer > 0 && !this.over) this.updateMagnet(dt);
 
     this.angle += this.angVel * dt;
     this.angVel *= Math.exp(-0.8 * dt);
@@ -579,7 +696,11 @@ export class Run {
   }
 
   private substep(h: number): void {
-    if (this.dashTimer > 0) {
+    if (this.meteorTimer > 0) this.meteorStep(h);
+    if (this.over) return;
+    if (this.meteorTimer > 0) {
+      // the meteor ignores gravity, drag and contacts: the shaft below was just cleared
+    } else if (this.dashTimer > 0) {
       // the dash ignores gravity and drag: a straight, committed rush
       this.dashTimer -= h;
       this.vx = this.dashVx;
@@ -674,7 +795,7 @@ export class Run {
           return;
         }
         // too hard to smash through: the dash dents it and stops
-        const frac = Math.max(0, this.world.hpAt(cx, cy) / blockHp(id, cy, this.world.hpMult));
+        const frac = Math.max(0, this.world.hpAt(cx, cy) / this.world.fullHp(id, cy));
         this.emit({ t: 'hit', x: cx, y: cy, id, dmg: this.dashDamage, crit: false, frac, speed: vn });
       }
       this.endDash(); // obsidian / bedrock / a block too hard stop the dash
@@ -733,13 +854,22 @@ export class Run {
     } else {
       this.x += nx * pen;
       this.y += ny * pen;
-      const frac = Number.isFinite(before) ? Math.max(0, this.world.hpAt(cx, cy) / blockHp(id, cy, this.world.hpMult)) : 1;
+      const frac = Number.isFinite(before) ? Math.max(0, this.world.hpAt(cx, cy) / this.world.fullHp(id, cy)) : 1;
       this.emit({ t: 'hit', x: cx, y: cy, id, dmg, crit, frac, speed: vn });
       if (++this.bouncesSinceBreak === 3) this.emit({ t: 'stuck' });
-      this.reflect(nx, ny, vn, PHYS.restitution);
-      if (ny < -0.5) {
-        this.vy = Math.min(this.vy, -PHYS.minBounce);
-        this.vx += this.rng.sign() * this.rng.range(PHYS.sideKickMin, PHYS.sideKickMax);
+      if (def.slippery && ny < -0.5) {
+        // ice: a low hop and a long skid to the side instead of a bounce
+        this.reflect(nx, ny, vn, 0.1);
+        this.vy = Math.min(this.vy, -PHYS.minBounce * 0.45);
+        const dir = this.vx !== 0 ? Math.sign(this.vx) : this.rng.sign();
+        this.vx = dir * Math.max(Math.abs(this.vx), this.rng.range(3.5, 5.5));
+        this.emit({ t: 'skid', x: this.x, y: this.y + this.radius, dir });
+      } else {
+        this.reflect(nx, ny, vn, PHYS.restitution);
+        if (ny < -0.5) {
+          this.vy = Math.min(this.vy, -PHYS.minBounce);
+          this.vx += this.rng.sign() * this.rng.range(PHYS.sideKickMin, PHYS.sideKickMax);
+        }
       }
       this.angVel = this.rng.sign() * this.rng.range(6, 14);
     }
@@ -762,7 +892,7 @@ export class Run {
       const def = blockDef(id);
       if (!def.solid || !Number.isFinite(def.hp) || def.special) continue;
       if (this.world.damage(x, cy, dmg)) this.breakBlock(x, cy, 'pick', false);
-      else this.emit({ t: 'hit', x, y: cy, id, dmg, crit: false, frac: Math.max(0, this.world.hpAt(x, cy) / blockHp(id, cy, this.world.hpMult)), speed: 0 });
+      else this.emit({ t: 'hit', x, y: cy, id, dmg, crit: false, frac: Math.max(0, this.world.hpAt(x, cy) / this.world.fullHp(id, cy)), speed: 0 });
     }
   }
 
@@ -773,10 +903,10 @@ export class Run {
   }
 
   private spendDurability(cost: number): void {
-    if (cost <= 0 || this.dashGrace > 0 || this.shieldTimer > 0) return;
+    if (cost <= 0 || this.dashGrace > 0 || this.shieldTimer > 0 || this.meteorTimer > 0) return;
     const save = Math.min(0.75, 0.25 * this.enchants.unbreaking);
     if (save > 0 && this.rng.chance(save)) return;
-    this.durability -= cost;
+    this.durability -= cost * (WORLDS[this.worldIdx]?.wear ?? 1);
   }
 
   private die(): void {
@@ -804,7 +934,7 @@ export class Run {
 
   blockValue(id: B, y: number): number {
     const def = blockDef(id);
-    let v = def.value * (1 + Math.max(0, y) / RUN.depthValueDiv);
+    let v = def.value * (1 + (Math.max(0, y) + this.world.offset) / RUN.depthValueDiv);
     v *= this.stats.coinMult * (1 + TIERS[this.tier].coinBonus);
     if (def.ore) {
       if (this.furnaceTimer > 0) v *= 2;
@@ -908,20 +1038,42 @@ export class Run {
         this.gems++;
         this.emit({ t: 'gem', amount: 1, x, y });
         break;
-      case 'core':
+      case 'rift':
+        this.rifts++;
+        this.emit({ t: 'rift', x: x + 0.5, y: y + 0.5 });
+        if (cause === 'pick' && this.meteorTimer <= 0) this.plunge();
+        break;
+      case 'rune': {
+        this.runes++;
+        const id = this.rng.weighted((Object.keys(RUNES.weights) as RuneId[]).map((item) => ({ item, w: RUNES.weights[item] })));
+        if (id === 'might') this.mightTimer = RUNES.time;
+        else if (id === 'gold') this.goldTimer = Math.max(this.goldTimer, RUNES.time);
+        else if (id === 'ward') this.shieldTimer = Math.max(this.shieldTimer, RUNES.time);
+        else {
+          const amount = Math.min(this.maxDur - this.durability, Math.round(this.maxDur * RUNES.mend));
+          this.durability += amount;
+          this.emit({ t: 'heal', amount });
+        }
+        this.slow(0.35, 0.45);
+        this.emit({ t: 'rune', id, x: x + 0.5, y: y + 0.5 });
+        break;
+      }
+      case 'core': {
+        const reward = WORLDS[this.worldIdx]?.core ?? WORLDS[0].core;
         this.core = true;
-        this.bonusCoins += CORE_REWARD.coins;
-        this.gems += CORE_REWARD.gems;
+        this.bonusCoins += reward.coins;
+        this.gems += reward.gems;
         this.over = true;
         this.emit({ t: 'core' });
         break;
+      }
       case 'slime':
         break;
     }
   }
 
   private openChest(x: number, y: number): void {
-    const biome = biomeAt(y);
+    const biome = biomeAt(y, this.worldIdx);
     const avgOre =
       biome.ores.reduce((s, o) => s + blockDef(o.item).value * o.w, 0) / biome.ores.reduce((s, o) => s + o.w, 0);
     const roll = this.rng.next();
@@ -929,7 +1081,7 @@ export class Run {
     let amount: number;
     if (roll < 0.5) {
       loot = 'coins';
-      amount = Math.round(avgOre * this.rng.range(8, 20) * this.stats.coinMult * (1 + y / RUN.depthValueDiv));
+      amount = Math.round(avgOre * this.rng.range(8, 20) * this.stats.coinMult * (1 + (y + this.world.offset) / RUN.depthValueDiv));
       this.bonusCoins += amount;
     } else if (roll < 0.7) {
       loot = 'gems';
@@ -1077,9 +1229,10 @@ export class Run {
     const d = this.depth;
     while (this.maxDepth < d) {
       this.maxDepth++;
-      this.depthCoins += this.maxDepth > this.init.bestDepth ? RUN.depthCoinNew : RUN.depthCoinOld;
-      for (let i = 1; i < BIOMES.length; i++) {
-        const b = BIOMES[i];
+      this.depthCoins += (this.maxDepth > this.init.bestDepth ? RUN.depthCoinNew : RUN.depthCoinOld) * (1 + this.world.offset / RUN.depthValueDiv);
+      const biomes = biomesOf(this.worldIdx);
+      for (let i = 1; i < biomes.length; i++) {
+        const b = biomes[i];
         if (this.maxDepth === b.from && !this.init.milestones.includes(i) && !this.newMilestones.includes(i)) {
           this.newMilestones.push(i);
           const coins = Math.round(b.milestoneCoins * this.stats.coinMult);
@@ -1124,6 +1277,8 @@ export class Run {
       enchantsGot: this.enchantsGot,
       slimes: this.slimes,
       crits: this.crits,
+      rifts: this.rifts,
+      runes: this.runes,
       oreCounts: { ...this.oreCounts },
       boostsUsed: { ...this.boostsUsed },
     };

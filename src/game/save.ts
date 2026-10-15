@@ -64,6 +64,19 @@ export interface QuestState {
   rerolled: boolean;
 }
 
+/** Per-world campaign progress (the active world's copy lives in the top-level fields). */
+export interface WorldSave {
+  bestDepth: number;
+  milestones: number[];
+  liftStops: number[];
+  startDepth: number;
+  coreReached: boolean;
+}
+
+export function freshWorldSave(): WorldSave {
+  return { bestDepth: 0, milestones: [], liftStops: [], startDepth: 0, coreReached: false };
+}
+
 export type DifficultyChoice = 'easy' | 'normal' | 'hard' | '';
 
 export interface SaveData {
@@ -131,6 +144,14 @@ export interface SaveData {
   missions: MissionState;
   hintDownDone: boolean;
   hintBoostsDone: boolean;
+  /** Active world (0 = Earth, 1 = Frost, 2 = Ruins). bestDepth & co. belong to it. */
+  world: number;
+  /** How many worlds are open (a world opens at the previous world's Core). */
+  worldsOpen: number;
+  /** Stored progress of every world; the active one is refreshed on switch/save. */
+  worldSaves: WorldSave[];
+  /** Worlds whose "new world" welcome was already shown. */
+  worldIntro: number[];
 }
 
 export function freshMissions(): MissionState {
@@ -191,11 +212,15 @@ export function newSave(): SaveData {
     hintEventsDone: false,
     pushAsked: false,
     dashDown: 0,
-    boosts: { giant: 0, twin: 0, teleport: 0, shield: 0 },
+    boosts: { giant: 0, twin: 0, teleport: 0, shield: 0, magnet: 0, meteor: 0 },
     loadout: ['dynamite'],
     missions: freshMissions(),
     hintDownDone: false,
     hintBoostsDone: false,
+    world: 0,
+    worldsOpen: 1,
+    worldSaves: [freshWorldSave(), freshWorldSave(), freshWorldSave()],
+    worldIntro: [0],
   };
 }
 
@@ -218,13 +243,19 @@ export function migrate(raw: unknown): SaveData {
   out.loadout = Array.isArray(r.loadout) ? r.loadout : base.loadout;
   out.missions = r.missions && Array.isArray(r.missions.list) ? { ...base.missions, ...r.missions } : base.missions;
   out.quests = r.quests && Array.isArray(r.quests.list) ? r.quests : base.quests;
+  out.worldSaves = base.worldSaves.map((w, i) => ({ ...w, ...(Array.isArray(r.worldSaves) ? r.worldSaves[i] ?? {} : {}) }));
+  out.worldIntro = Array.isArray(r.worldIntro) ? r.worldIntro : base.worldIntro;
+  // players who already beat the Core before worlds existed get the Frost world right away
+  if (r.coreReached && (r.worldsOpen ?? 1) < 2) out.worldsOpen = 2;
   // v1 players already know how to play
   if (r.version === 1 && (r.runs ?? 0) > 0) out.tutorialDone = true;
   // existing players keep the balance they were playing with
   if (!r.difficulty && (r.runs ?? 0) > 0) out.difficulty = 'normal';
-  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen', 'pickSize', 'shaftWidth', 'dashDown'] as const) {
+  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen', 'pickSize', 'shaftWidth', 'dashDown', 'world', 'worldsOpen'] as const) {
     if (typeof out[k] !== 'number' || !Number.isFinite(out[k])) out[k] = base[k];
   }
+  out.worldsOpen = Math.max(1, Math.min(3, out.worldsOpen));
+  out.world = Math.max(0, Math.min(out.worldsOpen - 1, out.world));
   return out;
 }
 

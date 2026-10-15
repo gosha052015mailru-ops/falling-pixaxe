@@ -1,7 +1,6 @@
 import { B, blockDef } from '../game/blocks';
-import { BIOMES, BOOSTS, BOOST_FX, WORLD_W, biomeAt, biomeIndex } from '../game/config';
+import { BOOSTS, BOOST_FX, WORLDS, WORLD_W, biomeAt, biomeIndex, biomesOf } from '../game/config';
 import type { GameEvent, Run } from '../game/run';
-import { blockHp } from '../game/world';
 import { fmt } from '../ui/format';
 import { t } from '../ui/i18n';
 import { Particles } from './particles';
@@ -17,7 +16,16 @@ const BOOST_FX_COLORS: Record<string, string[]> = {
   twin: ['#6ff3f0', '#bffcff', '#fff'],
   teleport: ['#c77dff', '#6ff3f0', '#fff'],
   shield: ['#5ab0ff', '#bfe3ff', '#fff'],
+  magnet: ['#ff3355', '#ffb3c1', '#fff'],
+  meteor: ['#ff7a1a', '#ffd23f', '#fff'],
 };
+/** How dark each biome of each world gets around the pickaxe's light. */
+const DARKNESS = [
+  [0.0, 0.25, 0.4, 0.3, 0.45, 0.6],
+  [0.0, 0.2, 0.3, 0.4, 0.55],
+  [0.0, 0.4, 0.45, 0.35, 0.6],
+];
+const RUNE_COLOR: Record<string, string> = { might: '#ff5a3c', gold: '#ffd23f', ward: '#5ab0ff', mend: '#5dff7a' };
 
 export class Renderer {
   readonly ctx: CanvasRenderingContext2D;
@@ -44,6 +52,10 @@ export class Renderer {
   /** Teleport portals: entry and exit swirl for a moment. */
   private portals: { x: number; y: number; life: number; color: string }[] = [];
   private beam: { x: number; y0: number; y1: number; life: number } | null = null;
+  /** Magnet: short-lived pull lines from the pickaxe to the ore it rips out. */
+  private pulls: { x0: number; y0: number; x: number; y: number; life: number }[] = [];
+  /** Ice rift: a cold streak behind the plunging pickaxe. */
+  private riftGlow = 0;
   /** Settings / adaptive quality. */
   maxDpr = 3;
   shakeEnabled = true;
@@ -79,6 +91,8 @@ export class Renderer {
     this.giantVel = 0;
     this.portals = [];
     this.beam = null;
+    this.pulls = [];
+    this.riftGlow = 0;
   }
 
   shake(amount: number): void {
@@ -232,6 +246,31 @@ export class Renderer {
         fx.burst(e.x, e.y, ['#6ff3f0', '#bffcff', '#fff'], 18, 6, 0.12, 0, true);
         fx.ring(e.x, e.y, 1.2, '#bffcff');
         break;
+      case 'rift':
+        this.doFlash('#6ff3f0', 0.45);
+        fx.ring(e.x, e.y, 2.4, '#bffcff');
+        fx.burst(e.x, e.y, ['#6ff3f0', '#ffffff', '#9fd8ff'], 45, 10, 0.14, 6, true);
+        fx.text(e.x, e.y - 1, t('fx.rift'), '#bffcff', 0.6);
+        this.shake(0.3);
+        this.riftGlow = 0.6;
+        this.dashGlow = 0.6;
+        break;
+      case 'rune': {
+        const c = RUNE_COLOR[e.id] ?? '#ffd23f';
+        this.doFlash(c, 0.45);
+        fx.ring(e.x, e.y, 2.2, '#ffd23f');
+        fx.ring(e.x, e.y, 3.2, c);
+        fx.burst(e.x, e.y, ['#ffd23f', c, '#ffffff'], 45, 8, 0.14, -2, true);
+        fx.text(e.x, e.y - 1, t(`rune.${e.id}`), c, 0.6);
+        break;
+      }
+      case 'magnet':
+        this.pulls.push({ x0: e.x0, y0: e.y0, x: e.x, y: e.y, life: 0.22 });
+        fx.burst(e.x, e.y, ['#ff3355', '#ffb3c1', '#fff'], 6, 4, 0.1, 0, true);
+        break;
+      case 'skid':
+        fx.burst(e.x - e.dir * 0.3, e.y, ['#ffffff', '#d9f2ff', '#9fd8ff'], 5, 3, 0.09, 6);
+        break;
       case 'nudge':
         fx.burst(this.lastPickX - e.dir * 0.5, this.lastPickY, ['rgba(255,255,255,0.8)'], 5, 3, 0.1, 0);
         break;
@@ -267,6 +306,20 @@ export class Renderer {
     for (const p of this.portals) p.life -= dt;
     this.portals = this.portals.filter((p) => p.life > 0);
     if (this.beam && (this.beam.life -= dt) <= 0) this.beam = null;
+    for (const p of this.pulls) p.life -= dt;
+    this.pulls = this.pulls.filter((p) => p.life > 0);
+    this.riftGlow = Math.max(0, this.riftGlow - dt);
+    if (this.riftGlow > 0) this.fx.burst(run.x, run.y - 0.5, ['#bffcff', '#6ff3f0'], 2, 2, 0.1, -3, true);
+    if (run.meteorTimer > 0) {
+      this.fx.burst(run.x, run.y - 0.6, ['#ff7a1a', '#ffd23f', '#ff3300', '#555'], 4, 4, 0.16, -8, true);
+      this.shake(0.12);
+    }
+    if (run.mightTimer > 0 && Math.random() < 0.4) this.fx.burst(run.x, run.y, ['#ff5a3c', '#ffb347'], 1, 2, 0.11, -3, true);
+    // world ambience: snow drifts in Frost, golden dust in the Ruins
+    const amb = run.worldIdx === 1 ? ['#ffffff', '#d9f2ff'] : run.worldIdx === 2 ? ['#ffd23f', '#f6dca0'] : null;
+    if (amb && Math.random() < dt * 6) {
+      this.fx.burst(this.camX + Math.random() * this.viewW, this.camY - 0.5, amb, 1, 0.6, 0.08, run.worldIdx === 1 ? 1.5 : -0.3, true);
+    }
     if (run.twinTimer > 0) for (const g of run.twins) if (Math.random() < 0.35) this.fx.burst(g.x, g.y, ['#6ff3f0', '#bffcff'], 1, 1.5, 0.1, 0, true);
     if (run.giantTimer > 0 && Math.random() < 0.4) this.fx.burst(run.x, run.y, ['#ffd23f', '#fff'], 1, 3, 0.12, 0, true);
     this.fx.update(dt);
@@ -289,7 +342,9 @@ export class Renderer {
     const toY = (y: number) => (y - camY) * s;
 
     // background
-    const biome = biomeAt(Math.max(0, Math.floor(run.y)));
+    const wi = run.worldIdx;
+    const biome = biomeAt(Math.max(0, Math.floor(run.y)), wi);
+    const sky = WORLDS[wi]?.sky ?? WORLDS[0].sky;
     const g = ctx.createLinearGradient(0, 0, 0, H);
     g.addColorStop(0, biome.bg[0]);
     g.addColorStop(1, biome.bg[1]);
@@ -307,11 +362,11 @@ export class Renderer {
       if (y < 0) {
         // daylight sky above the surface, fading into the dark at the top
         const k = Math.max(0, 1 + y / 14);
-        ctx.fillStyle = `rgb(${Math.round(40 + 70 * k)},${Math.round(60 + 120 * k)},${Math.round(110 + 130 * k)})`;
+        ctx.fillStyle = `rgb(${Math.round(sky[0] * (0.36 + 0.64 * k))},${Math.round(sky[1] * (0.33 + 0.67 * k))},${Math.round(sky[2] * (0.46 + 0.54 * k))})`;
         ctx.fillRect(0, py, W, sz);
         continue;
       }
-      const backId = BIOMES[biomeIndex(y)].base[0].item;
+      const backId = biomesOf(wi)[biomeIndex(y, wi)].base[0].item;
       const xa = Math.max(-1, Math.floor(camX) - 1);
       const xb = Math.min(this.worldW, Math.ceil(camX + this.viewW) + 1);
       for (let x = xa; x <= xb; x++) {
@@ -332,7 +387,7 @@ export class Renderer {
         ctx.drawImage(tex.blocks[id], pxX, py, sz, sz);
         const def = blockDef(id);
         if (Number.isFinite(def.hp) && !def.special) {
-          const frac = world.hpAt(x, y) / blockHp(id, y);
+          const frac = world.hpAt(x, y) / world.fullHp(id, y);
           if (frac < 0.999) {
             const stage = frac > 0.66 ? 0 : frac > 0.33 ? 1 : 2;
             ctx.drawImage(tex.cracks[stage], pxX, py, sz, sz);
@@ -359,6 +414,20 @@ export class Renderer {
       ctx.fillStyle = gr;
       const ya = toY(this.beam.y0);
       ctx.fillRect(bx - s * 0.5, ya, s, toY(this.beam.y1) - ya);
+    }
+
+    // magnet pull lines
+    for (const p of this.pulls) {
+      const a = p.life / 0.22;
+      ctx.strokeStyle = `rgba(255,51,85,${0.8 * a})`;
+      ctx.lineWidth = Math.max(2, s * 0.14);
+      ctx.beginPath();
+      ctx.moveTo(toX(p.x0), toY(p.y0));
+      ctx.lineTo(toX(p.x), toY(p.y));
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255,255,255,${0.9 * a})`;
+      ctx.lineWidth = Math.max(1, s * 0.05);
+      ctx.stroke();
     }
 
     // pickaxe + motion trail
@@ -406,7 +475,48 @@ export class Renderer {
         ctx.fillRect(toX(run.x) - s * 1.5, toY(run.y) - s * 1.5, s * 3, s * 3);
         if (Math.random() < 0.6) this.fx.burst(run.x, run.y, RAINBOW, 1, 2, 0.12, 0, true);
       }
-      this.drawPick(pick, toX(run.x), toY(run.y), run.angle, s, gv);
+      const px = toX(run.x);
+      const py = toY(run.y);
+      if (run.magnetTimer > 0) {
+        // a dashed field circle that slowly turns; blinks before it ends
+        if (!(run.magnetTimer < 1.5 && Math.floor(this.time * 8) % 2 === 0)) {
+          ctx.save();
+          ctx.setLineDash([s * 0.3, s * 0.25]);
+          ctx.lineDashOffset = -this.time * s * 2;
+          ctx.strokeStyle = 'rgba(255,51,85,0.55)';
+          ctx.lineWidth = Math.max(2, s * 0.08);
+          ctx.beginPath();
+          ctx.arc(px, py, BOOST_FX.magnetRadius * s, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+      if (run.meteorTimer > 0 || run.mightTimer > 0) {
+        const hot = run.meteorTimer > 0;
+        const r0 = s * (hot ? 1.8 : 1.3);
+        const gr = ctx.createRadialGradient(px, py, 0, px, py, r0);
+        gr.addColorStop(0, hot ? 'rgba(255,240,180,0.85)' : 'rgba(255,90,60,0.5)');
+        gr.addColorStop(0.5, hot ? 'rgba(255,122,26,0.55)' : 'rgba(255,90,60,0.2)');
+        gr.addColorStop(1, 'rgba(255,60,0,0)');
+        ctx.fillStyle = gr;
+        ctx.fillRect(px - r0, py - r0, r0 * 2, r0 * 2);
+        if (hot) {
+          // fiery tail above the falling pickaxe
+          const tg = ctx.createLinearGradient(0, py - s * 4, 0, py);
+          tg.addColorStop(0, 'rgba(255,122,26,0)');
+          tg.addColorStop(1, 'rgba(255,200,80,0.6)');
+          ctx.fillStyle = tg;
+          ctx.fillRect(px - s * 0.7, py - s * 4, s * 1.4, s * 4);
+        }
+      }
+      if (this.riftGlow > 0) {
+        const tg = ctx.createLinearGradient(0, py - s * 5, 0, py);
+        tg.addColorStop(0, 'rgba(111,243,240,0)');
+        tg.addColorStop(1, `rgba(191,252,255,${Math.min(0.7, this.riftGlow)})`);
+        ctx.fillStyle = tg;
+        ctx.fillRect(px - s * 0.6, py - s * 5, s * 1.2, s * 5);
+      }
+      this.drawPick(pick, px, py, run.angle, s, gv);
       if (run.shieldTimer > 0) this.drawShield(toX(run.x), toY(run.y), run.shieldTimer, s * PICK_SIZE * this.pickScale * gv * 0.62);
     }
 
@@ -430,8 +540,8 @@ export class Renderer {
     ctx.globalAlpha = 1;
 
     // darkness grows with depth; the pickaxe carries a light
-    const bi = biomeIndex(Math.max(0, Math.floor(run.y)));
-    const dark = [0.0, 0.25, 0.4, 0.3, 0.45, 0.6][bi] ?? 0.6;
+    const bi = biomeIndex(Math.max(0, Math.floor(run.y)), wi);
+    const dark = (DARKNESS[wi] ?? DARKNESS[0])[bi] ?? 0.6;
     if (dark > 0) {
       const lx = toX(run.x);
       const ly = toY(run.y);

@@ -1,14 +1,21 @@
 import { App as CapApp } from '@capacitor/app';
 import { flush, setUserProps, startAnalytics, track } from '../analytics';
 import { BIOME_THEMES, music, type ThemeId } from '../audio/music';
+
+/** Later worlds reuse the six biome tunes in their own order. */
+const WORLD_THEMES: ThemeId[][] = [
+  BIOME_THEMES,
+  ['meadow', 'caves', 'grotto', 'depths', 'abyss'],
+  ['meadow', 'depths', 'lava', 'grotto', 'abyss'],
+];
 import { sfx } from '../audio/sfx';
 import { blockDef } from '../game/blocks';
 import { Bot } from '../game/bot';
-import { BIOMES, BOOSTS, FAST_FORWARD, PHYS, TIERS, biomeIndex, type BoostId } from '../game/config';
+import { BOOSTS, FAST_FORWARD, PHYS, RUNES, TIERS, WORLDS, biomeIndex, biomesOf, type BoostId } from '../game/config';
 import { addCoins, deriveStats } from '../game/economy';
 import { missionsReachedLive, progressMissions, runMetrics, unlocked, type MissionDone } from '../game/meta';
 import { addPlayTime, eventGoalFor, recordRun, startSession, userProperties } from '../game/profile';
-import { applyResult, type ProgressReport } from '../game/progress';
+import { applyResult, switchWorld, type ProgressReport } from '../game/progress';
 import { Run, type GameEvent, type RunResult } from '../game/run';
 import { clockNow, loadSave, wipeStorage, writeSave, type SaveData } from '../game/save';
 import { clearPush, listenPushOpens, schedulePush } from '../notifications';
@@ -30,7 +37,7 @@ const MAX_STEPS = 36;
 /** Background longer than this starts a new analytics session (industry default: 30 min). */
 const SESSION_TIMEOUT = 30 * 60_000;
 const BANNER_GAP = 4;
-const BOOST_COLOR: Record<BoostId, string> = { dynamite: '#ff6a3d', giant: '#ffb020', twin: '#6ff3f0', teleport: '#c77dff', shield: '#5ab0ff' };
+const BOOST_COLOR: Record<BoostId, string> = { dynamite: '#ff6a3d', giant: '#ffb020', twin: '#6ff3f0', teleport: '#c77dff', shield: '#5ab0ff', magnet: '#ff3355', meteor: '#ff7a1a' };
 
 export class App {
   save: SaveData = loadSave();
@@ -158,14 +165,16 @@ export class App {
 
   private musicTheme(): ThemeId {
     if (this.mode === 'menu' || this.mode === 'results' || this.bot) return 'menu';
-    return BIOME_THEMES[biomeIndex(Math.max(0, this.run.depth))];
+    const w = this.run.worldIdx;
+    const themes = WORLD_THEMES[w] ?? BIOME_THEMES;
+    return themes[biomeIndex(Math.max(0, this.run.depth), w)] ?? themes[0];
   }
 
   /** Keep the soundtrack in sync with mode, biome, fever and overlays. */
   updateMusic(force = false): void {
     if (!sfx.context) return;
     const theme = this.musicTheme();
-    const bi = this.mode === 'play' ? biomeIndex(Math.max(0, this.run.depth)) : -1;
+    const bi = this.mode === 'play' ? this.run.worldIdx * 100 + biomeIndex(Math.max(0, this.run.depth), this.run.worldIdx) : -1;
     if (force || bi !== this.musicBiome) {
       this.musicBiome = bi;
       music.play(theme);
@@ -193,7 +202,7 @@ export class App {
    * Tester shortcut (console: game.cheat({...})). Edits the live save — editing localStorage
    * directly does not work because the game writes its in-memory state back on reload.
    */
-  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number; size?: number; width?: number; playMin?: number; down?: number; boosts?: number } = {}): void {
+  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number; size?: number; width?: number; playMin?: number; down?: number; boosts?: number; world?: number } = {}): void {
     const s = this.save;
     s.coins += o.coins ?? 1e6;
     s.gems += o.gems ?? 100;
@@ -204,6 +213,18 @@ export class App {
     if (o.width !== undefined) s.shaftWidth = Math.max(0, Math.min(5, o.width));
     if (o.down !== undefined) s.dashDown = Math.max(0, Math.min(5, o.down));
     if (o.boosts) for (const k of Object.keys(s.boosts) as (keyof typeof s.boosts)[]) s.boosts[k] += o.boosts;
+    if (o.world !== undefined) {
+      // open every world up to this one (as if the Cores were reached) and switch to it
+      const w = Math.max(0, Math.min(WORLDS.length - 1, o.world));
+      for (let i = 0; i < w; i++) {
+        if (i === s.world) s.coreReached = true;
+        else s.worldSaves[i].coreReached = true;
+      }
+      s.worldsOpen = Math.max(s.worldsOpen, w + 1);
+      s.forgeTier = Math.max(s.forgeTier, WORLDS[w].baseTier);
+      for (let i = 0; i < s.worldsOpen; i++) if (!s.worldIntro.includes(i)) s.worldIntro.push(i);
+      switchWorld(s, w);
+    }
     if (o.playMin !== undefined) s.profile.playSec = Math.max(s.profile.playSec, o.playMin * 60);
     if (!s.difficulty) s.difficulty = 'normal';
     s.tutorialDone = true;
@@ -266,7 +287,7 @@ export class App {
     stats.dynamite = 3;
     stats.maxDurBase = Math.max(stats.maxDurBase, 120);
     stats.startDepth = 0;
-    this.run = new Run({ seed: (Math.random() * 1e9) | 0, stats, bestDepth: 1e9, milestones: BIOMES.map((_, i) => i) });
+    this.run = new Run({ seed: (Math.random() * 1e9) | 0, stats, bestDepth: 1e9, milestones: biomesOf(stats.world).map((_, i) => i) });
     this.bot = new Bot(0.8);
     this.renderer.reset(this.run);
   }
@@ -608,10 +629,10 @@ export class App {
         sfx.fanfare();
         vibrate('heavy');
         this.banner(
-          `<div class="t">${t(`biome.${BIOMES[e.biome].key}`)}</div><div class="s">+${fmt(e.coins)} · +${e.gems}</div>`,
+          `<div class="t">${t(`biome.${biomesOf(this.run.worldIdx)[e.biome].key}`)}</div><div class="s">+${fmt(e.coins)} · +${e.gems}</div>`,
           '#6ff3f0',
         );
-        track('milestone', { biome: e.biome });
+        track('milestone', { biome: e.biome, world: this.run.worldIdx });
         break;
       case 'totem':
         sfx.tierUp();
@@ -626,6 +647,21 @@ export class App {
         sfx.fanfare();
         vibrate('heavy');
         this.banner(`<div class="t">${t('core')}</div>`, '#ff7ad9');
+        break;
+      case 'rift':
+        sfx.dash(1);
+        vibrate('medium');
+        this.banner(`<div class="t">${t('fx.rift')}</div><div class="s">${t('riftSub')}</div>`, '#6ff3f0', false);
+        break;
+      case 'rune':
+        sfx.magic();
+        vibrate('medium');
+        this.banner(`<div class="t">${t(`rune.${e.id}`)}</div><div class="s">${t(`runed.${e.id}`)}</div>`, '#ffd23f');
+        break;
+      case 'magnet':
+        sfx.rare();
+        break;
+      case 'skid':
         break;
       case 'dash':
         sfx.dash(e.power);
@@ -676,7 +712,7 @@ export class App {
         this.banner(`<div class="t">${t('teleported', { n: e.dist })}</div>`, BOOST_COLOR.teleport, false);
         break;
       case 'boostEnd':
-        if (e.id === 'giant' || e.id === 'shield') sfx.nudge();
+        if (e.id !== 'twin' && e.id !== 'teleport') sfx.nudge();
         break;
       case 'twinPoof':
         break;
@@ -856,6 +892,7 @@ export class App {
     for (const [k, v] of Object.entries(r.enchants)) {
       if (v > 0) buffs.push(`<span class="buff" style="--c:#6a35c2">${icon('sparkle', 20)}${t(`ench.${k}`).split(':')[0]}${v > 1 ? ' x' + v : ''}</span>`);
     }
+    if (r.mightTimer > 0) buffs.push(`<span class="buff" style="--c:#c2402a">${icon('hammer', 20)}x${RUNES.might} ${Math.ceil(r.mightTimer)}</span>`);
     if (r.totems > 0) buffs.push(`<span class="buff" style="--c:#8a6a1a">${icon('totem', 20)}</span>`);
     const bh = buffs.join('');
     if (bh !== h.buffs) {

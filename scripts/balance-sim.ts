@@ -3,11 +3,11 @@
  * applies results and buys upgrades between runs.
  *   npm run sim -- [maxRuns] [seed] [--diff=easy|normal|hard]
  */
-import { BIOMES, BOOST_IDS, CAMPAIGN_DEPTH, PRESTIGE, type UpgradeId } from '../src/game/config';
+import { BOOST_IDS, CAMPAIGN_DEPTH, PRESTIGE, TIERS, WORLDS, biomesOf, type UpgradeId } from '../src/game/config';
 import { FEATURE_LEVEL } from '../src/game/meta';
-import { buyDashDown, dashDownCost, buyDynamite, buyForge, buyMega, megaCost, buyUpgrade, canPrestige, deriveStats, doPrestige, dynamiteCost, forgeCost, upgradeCost, upgradeDef } from '../src/game/economy';
+import { boostAvailable, buyDashDown, dashDownCost, buyDynamite, buyForge, buyMega, megaCost, buyUpgrade, canPrestige, deriveStats, doPrestige, dynamiteCost, forgeCost, upgradeCost, upgradeDef } from '../src/game/economy';
 import { Bot } from '../src/game/bot';
-import { applyResult, buyLiftStop, nextLiftStop, unlockedCheckpoints } from '../src/game/progress';
+import { applyResult, buyLiftStop, nextLiftStop, switchWorld, unlockedCheckpoints } from '../src/game/progress';
 import { Run } from '../src/game/run';
 import { eventGoalFor, recordRun } from '../src/game/profile';
 import { newSave } from '../src/game/save';
@@ -23,6 +23,8 @@ save.difficulty = (diffArg?.slice(7) as typeof save.difficulty) || 'normal';
 const reached = new Map<number, { run: number; minutes: number }>();
 let minutes = 0;
 let lastLog = 0;
+const worldLog: string[] = [];
+const oneWorld = process.argv.includes('--world1');
 let eventsOn = false;
 let totalEvents = 0;
 let eventRuns = 0;
@@ -41,14 +43,14 @@ for (let i = 1; i <= maxRuns; i++) {
     console.log(`  ✦ mine events unlocked at ~${minutes.toFixed(0)} min (run ${i}, goal ${eventGoal} blocks)`);
   }
   if (save.level >= FEATURE_LEVEL.boosts && !noBoosts) {
-    save.loadout = [...BOOST_IDS].sort((a, b) => (b === 'dynamite' ? save.dynamite : save.boosts[b]) - (a === 'dynamite' ? save.dynamite : save.boosts[a])).slice(0, 3);
+    save.loadout = [...BOOST_IDS].filter((id) => boostAvailable(save, id)).sort((a, b) => (b === 'dynamite' ? save.dynamite : save.boosts[b]) - (a === 'dynamite' ? save.dynamite : save.boosts[a])).slice(0, 3);
   }
-  if (noBoosts) save.boosts = { giant: 0, twin: 0, teleport: 0, shield: 0 };
+  if (noBoosts) save.boosts = { giant: 0, twin: 0, teleport: 0, shield: 0, magnet: 0, meteor: 0 };
   const run = new Run({ seed: seed++, stats: deriveStats(save), bestDepth: save.bestDepth, milestones: save.milestones, eventGoal });
   const bot = new Bot(0.75);
   const dt = 1 / 60;
   let tierUps = 0;
-  while (!run.over && run.time < 600) {
+  while (!run.over && run.time < 900) {
     run.step(dt);
     const ev = run.drainEvents();
     if (ev.some((e) => e.t === 'tierUp')) tierUps++;
@@ -69,8 +71,10 @@ for (let i = 1; i <= maxRuns; i++) {
   totalEvents += r.events;
   if (eventsOn) eventRuns++;
   minutes += r.time / 60 + 0.25; // + time in menus
-  for (let b = 1; b < BIOMES.length; b++) if (r.depth >= BIOMES[b].from && !reached.has(b)) reached.set(b, { run: i, minutes });
-  if (r.core && !reached.has(99)) reached.set(99, { run: i, minutes });
+  const W = save.world * 100;
+  for (let b = 1; b < biomesOf(save.world).length; b++) if (r.depth >= biomesOf(save.world)[b].from && !reached.has(W + b)) reached.set(W + b, { run: i, minutes });
+  if (r.core && !reached.has(W + 99)) reached.set(W + 99, { run: i, minutes });
+  if (i - lastLog >= 10 && save.world > 0) worldLog.push(`w${save.world} ~${minutes.toFixed(0)}m ${r.time.toFixed(0)}s ${save.startDepth}→${r.depth} +${r.totalCoins} t${r.tier} f${save.forgeTier}`);
 
   // elevator stops: buy as soon as affordable (they save a lot of time)
   for (let stop = nextLiftStop(save); stop && save.coins >= stop.cost; stop = nextLiftStop(save)) {
@@ -104,23 +108,31 @@ for (let i = 1; i <= maxRuns; i++) {
   }
   if (save.dynamite < 2 && save.coins > dynamiteCost(save) * 5) buyDynamite(save);
 
-  if (i <= 10 || i - lastLog >= 10 || r.core) {
+  if (i <= 10 || i - lastLog >= (save.world > 0 ? 25 : 10) || r.core) {
     lastLog = i;
     console.log(
       `run ${String(i).padStart(3)} | ${r.time.toFixed(0).padStart(3)}s | start ${String(save.startDepth).padStart(3)} → ${String(r.depth).padStart(4)}m | coins +${String(r.totalCoins).padStart(7)} | tier ${r.tier} (+${tierUps}) | combo ${r.bestCombo} | forge ${save.forgeTier} | ` +
         BUY.map((id) => `${id.slice(0, 3)}${save.upgrades[id]}`).join(' '),
     );
   }
-  if (r.core) break;
+  if (r.core) {
+    if (oneWorld || save.world + 1 >= WORLDS.length) break;
+    switchWorld(save, save.world + 1);
+    const st = deriveStats(save);
+    console.log(`\n  🌍 WORLD ${save.world + 1} (${WORLDS[save.world].key}) at ~${minutes.toFixed(0)} min, coins ${Math.round(save.coins)}, forge ${save.forgeTier}, dmg ${Math.round(TIERS[st.startTier].dmg * st.powerMult)}, dur ${Math.round(st.maxDurBase * TIERS[st.startTier].dur)}, upgrades ${JSON.stringify(save.upgrades)}\n`);
+  }
   if (canPrestige(save) && save.bestDepth >= PRESTIGE.unlockDepth + 200 && save.prestiges === 0 && process.argv.includes('--prestige')) {
     console.log(`  ⟳ prestige: +${doPrestige(save)} shards`);
   }
 }
 
+for (const l of worldLog.filter((_, i) => i % 6 === 0)) console.log('  ' + l);
 console.log('\nMilestones:');
 for (const [b, v] of [...reached.entries()].sort((a, c) => a[0] - c[0])) {
-  const name = b === 99 ? `core (${CAMPAIGN_DEPTH}m)` : `${BIOMES[b].key} (${BIOMES[b].from}m)`;
-  console.log(`  ${name.padEnd(18)} run ${String(v.run).padStart(3)}  ~${v.minutes.toFixed(0)} min`);
+  const w = Math.floor(b / 100);
+  const k = b % 100;
+  const name = `${WORLDS[w].key}/` + (k === 99 ? `core (${CAMPAIGN_DEPTH}m)` : `${biomesOf(w)[k].key} (${biomesOf(w)[k].from}m)`);
+  console.log(`  ${name.padEnd(26)} run ${String(v.run).padStart(3)}  ~${v.minutes.toFixed(0)} min`);
 }
 console.log('missions: ' + missionsLog.join(' | '));
 console.log(`missions done ${save.missions.done}, boosts left ${JSON.stringify(save.boosts)} dyn ${save.dynamite}`);

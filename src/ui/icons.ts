@@ -48,6 +48,9 @@ const paths: Record<string, string> = {
   twin: `<g opacity=".55"><path d="M2 12c5-5 12-5 17 0-5-2-12-2-17 0z" fill="#9ff3f0" ${SW}/><path d="M9 11h3l-1 15h-2z" fill="#a8723a" ${SW}/></g><path d="M13 9c5-5 12-5 17 0-5-2-12-2-17 0z" fill="#9ff3f0" ${SW}/><path d="M20 8h3l-1 21h-2z" fill="#a8723a" ${SW}/>`,
   teleport: `<ellipse cx="16" cy="9" rx="11" ry="4.5" fill="#c77dff" ${SW}/><ellipse cx="16" cy="9" rx="6" ry="2" fill="#2a1240"/><ellipse cx="16" cy="25" rx="11" ry="4.5" fill="#6ff3f0" ${SW}/><ellipse cx="16" cy="25" rx="6" ry="2" fill="#123a4a"/><path d="M16 12v9" stroke="#fff" stroke-width="3" stroke-dasharray="2 2.5" stroke-linecap="round"/>`,
   shield: `<path d="M16 3l11 4v8c0 7-5 12-11 14C10 27 5 22 5 15V7z" fill="#5ab0ff" ${SW}/><path d="M16 7l7 2.6V15c0 4.6-3 8-7 9.6z" fill="#8fd0ff"/><path d="M10 10v5" stroke="#fffa" stroke-width="2.4" stroke-linecap="round"/>`,
+  magnet: `<path d="M7 5h6v11a3 3 0 006 0V5h6v11a9 9 0 01-18 0z" fill="#ff3355" ${SW}/><path d="M7 5h6v5H7zM19 5h6v5h-6z" fill="#e6e6ec" ${SW}/><path d="M10 15v2" stroke="#fff8" stroke-width="2.4" stroke-linecap="round"/>`,
+  meteor: `<path d="M4 4l12 9M9 3l9 8M3 10l10 6" stroke="#ffb020" stroke-width="3.4" stroke-linecap="round"/><circle cx="20" cy="20" r="8" fill="#ff7a1a" ${SW}/><circle cx="18" cy="18" r="3" fill="#ffd23f"/><circle cx="23" cy="23" r="1.6" fill="#a83a10"/>`,
+  world: `<circle cx="16" cy="16" r="12" fill="#3d7bff" ${SW}/><path d="M9 9c3 1 4 4 2 6s1 5 4 4 3 3 3 5M20 6c-1 3 2 4 4 4M26 18c-2 0-4 1-4 3" fill="none" stroke="#7ccf4a" stroke-width="3.2" stroke-linecap="round"/><circle cx="12" cy="11" r="2" fill="#fff6"/>`,
   chevron: `<path d="M8 20l8-8 8 8" fill="none" stroke="${O}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 20l8-8 8 8" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>`,
   sparkle: `<path d="M16 3l3 10 10 3-10 3-3 10-3-10-10-3 10-3z" fill="#fff6a8" ${SW}/>`,
 };
@@ -67,4 +70,4 @@ export const UPGRADE_ICON: Record<string, string> = {
   weight: 'weight',
 };
 
-export const BOOST_ICON: Record<string, string> = { dynamite: 'bomb', giant: 'giant', twin: 'twin', teleport: 'teleport', shield: 'shield' };
+export const BOOST_ICON: Record<string, string> = { dynamite: 'bomb', giant: 'giant', twin: 'twin', teleport: 'teleport', shield: 'shield', magnet: 'magnet', meteor: 'meteor' };

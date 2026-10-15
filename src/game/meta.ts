@@ -5,7 +5,7 @@
  */
 import { BLOCKS, B } from './blocks';
 import { BOOST_IDS, DASH_DOWN, type BoostId } from './config';
-import { addBoost, addCoins, niceRound, rewardScale } from './economy';
+import { addBoost, addCoins, globalBest, niceRound, rewardScale } from './economy';
 import type { RunResult } from './run';
 import { Rng } from './rng';
 import { dayKey } from './time';
@@ -212,7 +212,7 @@ export function runMetrics(r: RunResult, startDepth: number): Record<string, num
     blocks: r.blocks, ores: r.ores, coins: r.totalCoins, meters: Math.max(0, r.depth - startDepth), depth: r.depth, tnt: r.tnt,
     chests: r.chests, tierUps: r.tierUps, dynamite: r.dynamiteUsed, dashes: r.dashes, dashBlocks: r.dashBlocks, bestDash: r.bestDash,
     fevers: r.fevers, events: r.events, boosts, heals: r.heals, enchants: r.enchantsGot, slimes: r.slimes, gems: r.gems, crits: r.crits,
-    combo: r.bestCombo, time: Math.round(r.time), runs: 1,
+    combo: r.bestCombo, time: Math.round(r.time), runs: 1, rifts: r.rifts ?? 0, runes: r.runes ?? 0,
   };
   for (const [k, v] of Object.entries(r.oreCounts)) m[`ore:${k}`] = v;
   return m;
@@ -264,6 +264,9 @@ const TEMPLATES: MissionTemplate[] = [
   { metric: 'slimes', scope: 'total', min: 2, avail: has('slimes', 0.3) },
   { metric: 'gems', scope: 'total', min: 1, avail: has('gems', 0.3) },
   { metric: 'crits', scope: 'total', min: 3, avail: has('crits', 1) },
+  // world mechanics: only where they exist
+  { metric: 'rifts', scope: 'total', min: 1, w: 1.5, avail: (s) => s.world === 1 && avg(s, 'rifts') >= 0.2 },
+  { metric: 'runes', scope: 'total', min: 1, w: 1.5, avail: (s) => s.world === 2 && avg(s, 'runes') >= 0.2 },
   { metric: 'runs', scope: 'total', min: 2, avail: (s) => s.missions.done >= 20, target: (_s, d) => Math.max(2, Math.round(1 + missionRuns(d) * 1.2)) },
   { metric: 'upgrade', scope: 'total', min: 1, target: (_s, d) => 1 + Math.floor(missionRuns(d) / 2) },
 ];
@@ -284,7 +287,7 @@ function makeMission(s: SaveData, rng: Rng, avoid: string[]): Mission {
   }
   // one template per ore the player keeps finding: "mine 12 iron"
   for (const k of Object.keys(s.missions.avg)) {
-    if (k.startsWith('ore:') && avg(s, k) >= 0.7 && !avoid.includes(`total:${k}`)) pool.push({ item: k, w: 0.6 });
+    if (k.startsWith('ore:') && avg(s, k) >= 0.7 && blockWorld(k.slice(4)) === s.world && !avoid.includes(`total:${k}`)) pool.push({ item: k, w: 0.6 });
   }
   const pick = rng.weighted(pool);
   const tpl: MissionTemplate = typeof pick === 'string' ? { metric: pick, scope: 'total', min: 3 } : pick;
@@ -408,6 +411,12 @@ export function discoveryGems(key: string): number {
 
 // ───────────────────────── achievements ─────────────────────────
 
+/** Which world a block belongs to (by its key). */
+export function blockWorld(key: string): number {
+  const id = BLOCKS.find((b) => b?.key === key)?.id ?? 0;
+  return id >= B.SAND ? 2 : id >= B.SNOW ? 1 : 0;
+}
+
 export interface AchievementDef {
   id: string;
   icon: string;
@@ -417,7 +426,9 @@ export interface AchievementDef {
 
 export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'blocks', icon: 'pickaxe', tiers: [100, 1000, 10000, 100000, 1000000], value: (s) => s.blocksBroken },
-  { id: 'depth', icon: 'down', tiers: [20, 100, 250, 450, 700, 1000], value: (s) => s.bestDepth },
+  // global depth: worlds 2 and 3 continue the count past 1000 m
+  { id: 'depth', icon: 'down', tiers: [20, 100, 250, 450, 700, 1000, 2000, 3000], value: (s) => globalBest(s) },
+  { id: 'worlds', icon: 'world', tiers: [2, 3], value: (s) => s.worldsOpen },
   { id: 'tnt', icon: 'bomb', tiers: [10, 100, 1000, 10000], value: (s) => s.life.tnt },
   { id: 'chests', icon: 'chest', tiers: [5, 50, 500], value: (s) => s.life.chests },
   { id: 'combo', icon: 'fire', tiers: [25, 50, 100, 200], value: (s) => s.life.maxCombo },

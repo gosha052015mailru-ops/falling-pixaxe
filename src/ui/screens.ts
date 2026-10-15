@@ -3,9 +3,11 @@ import { analyticsExport, analyticsLog, eventCounts, track } from '../analytics'
 const analyticsLogSize = () => analyticsLog().length;
 import { music } from '../audio/music';
 import { sfx } from '../audio/sfx';
-import { BLOCKS } from '../game/blocks';
-import { BIOMES, BOOST_IDS, BOOSTS, DASH_DOWN, DIFFICULTY, LOADOUT_SIZE, MAX_TIER, MEGA, PRESTIGE, SHOP, TIERS, UPGRADES, WORLD_W, type BoostId, type Difficulty, type MegaId, type UpgradeId } from '../game/config';
+import { B, BLOCKS } from '../game/blocks';
+import { BOOST_IDS, BOOSTS, CAMPAIGN_DEPTH, DASH_DOWN, DIFFICULTY, LOADOUT_SIZE, MEGA, PRESTIGE, SHOP, TIERS, UPGRADES, WORLDS, WORLD_W, biomesOf, type BoostId, type Difficulty, type MegaId, type UpgradeId } from '../game/config';
 import {
+  boostAvailable,
+  boostOpen,
   buyBoost,
   buyDashDown,
   boostCost,
@@ -22,6 +24,7 @@ import {
   deriveStats,
   doPrestige,
   forgeCost,
+  forgeMax,
   prestigeShards,
   upgradeCost,
   upgradeDef,
@@ -54,7 +57,7 @@ import {
   type Reward,
 } from '../game/meta';
 import { RETENTION_DAYS, playerMetrics } from '../game/profile';
-import { buyLiftStop, nextGoal, nextLiftStop, unlockedCheckpoints } from '../game/progress';
+import { buyLiftStop, nextGoal, nextLiftStop, switchWorld, unlockedCheckpoints } from '../game/progress';
 import { dayKey } from '../game/time';
 import { pushPermission, requestPush } from '../notifications';
 import { Rng } from '../game/rng';
@@ -248,12 +251,14 @@ export class Screens {
 
   private home(): void {
     const s = this.s;
+    // the menu background shows the world the player is in
+    if (this.app.mode === 'menu' && this.app.run.worldIdx !== s.world) this.app.startDemo();
     const cps = unlockedCheckpoints(s);
     if (!cps.includes(s.startDepth)) s.startDepth = 0;
     const goal = nextGoal(s);
     const goalHtml = goal
       ? `<div class="panel goal"><div class="row"><span><span class="tag">${t('goal')}</span><br>${
-          goal.biome > 0 ? t('goalBiome', { biome: t(`biome.${BIOMES[goal.biome].key}`) }) : t('goalCore')
+          goal.biome > 0 ? t('goalBiome', { biome: t(`biome.${biomesOf(s.world)[goal.biome].key}`) }) : t(s.world < WORLDS.length - 1 ? 'goalCoreNext' : 'goalCore', { world: t(`world.${WORLDS[s.world + 1]?.key ?? ''}`) })
         }</span><span>${s.bestDepth} / ${goal.depth} ${t('m')}</span></div>${bar(s.bestDepth / goal.depth, 'cyan')}</div>`
       : `<div class="panel goal center">${t('goalDone')}</div>`;
     const stop = nextLiftStop(s);
@@ -270,6 +275,14 @@ export class Screens {
           }</div>`
         : '';
     const xpNeed = xpForLevel(s.level);
+    const wd = WORLDS[s.world];
+    // the world switch shows up once the player has a reason to look at it (or a second world)
+    const worldBtn =
+      s.worldsOpen > 1 || s.bestDepth >= 100
+        ? `<button class="world-btn" data-a="worlds" style="--wc:${wd.color}">${icon('world', 24)}<span>${t(`world.${wd.key}`)}</span><b>${s.world + 1}/${WORLDS.length}</b>${
+            s.worldsOpen > 1 ? icon('play', 16) : icon('lock', 16)
+          }</button>`
+        : '';
     this.set(
       `<div class="topbar">
         <button class="lvl" data-a="profile"><div class="star">${icon('star', 44)}<b>${s.level}</b></div>${bar(s.xp / xpNeed, 'purple')}</button>
@@ -279,6 +292,7 @@ export class Screens {
       <div id="side">${this.sideHtml()}</div>
       <div class="home-main">
         <h1><span class="a">${t('title1')}</span><span class="b">${t('title2')}</span></h1>
+        ${worldBtn}
         <div class="hero">
           <img src="${this.app.pickUrl(s.forgeTier)}" alt="">
           <div class="name ol">${this.app.tierName(s.forgeTier)}</div>
@@ -317,8 +331,97 @@ export class Screens {
       sfx.click();
       this.loadoutModal();
     });
+    this.on('[data-a=worlds]', () => {
+      sfx.click();
+      this.worldsModal();
+    });
     this.lastSideKey = this.sideKey();
     this.bindSide();
+  }
+
+  /** Pick the world to dig in: each keeps its own record, elevator and milestones. */
+  worldsModal(): void {
+    const s = this.s;
+    const cards = WORLDS.map((w, i) => {
+      const open = i < s.worldsOpen;
+      const cur = i === s.world;
+      const ws = i === s.world ? { bestDepth: s.bestDepth, coreReached: s.coreReached } : s.worldSaves[i];
+      const only = BOOST_IDS.filter((id) => BOOSTS[id].world === i);
+      const feats = [t(`worldf.${w.key}`), ...only.map((id) => `${icon(BOOST_ICON[id], 16)} ${t(`boost.${id}`)}`)].join(' · ');
+      const status = !open
+        ? `<span class="wlock">${icon('lock', 18)} ${t('worldLocked', { world: t(`world.${WORLDS[i - 1].key}`) })}</span>`
+        : `${bar(Math.min(1, ws.bestDepth / CAMPAIGN_DEPTH), ws.coreReached ? 'gold' : 'cyan', `${ws.bestDepth} / ${CAMPAIGN_DEPTH} ${t('m')}${ws.coreReached ? ' ✓' : ''}`)}`;
+      return `<div class="card worldcard ${cur ? 'on' : ''} ${open ? '' : 'dim'}" style="--wc:${w.color}" ${open && !cur ? `data-world="${i}"` : ''}>
+        <div class="ic"><img src="${this.app.blockUrl(w.biomes[0].base[0].item)}"></div>
+        <div class="info"><div class="nm">${i + 1}. ${t(`world.${w.key}`)}${cur ? `<span class="lv">${t('worldHere')}</span>` : ''}</div>
+        <div class="ds">${t(`worldd.${w.key}`)}</div><div class="ds feats">${feats}</div>${status}</div>
+        ${open && !cur ? `<span class="go">${icon('play', 26)}</span>` : ''}</div>`;
+    }).join('');
+    const host = openModal(`<div class="modal panel wide-modal">
+      <div class="ribbon">${t('worlds')}</div>
+      <p class="sub">${t('worldsSub')}</p>
+      <div class="list">${cards}</div>
+      <button class="btn wide" data-a="ok">${t('ok')}</button></div>`);
+    this.on(
+      '[data-world]',
+      (el) => {
+        const w = Number(el.dataset.world);
+        if (!switchWorld(s, w)) return sfx.error();
+        sfx.tierUp();
+        vibrate('medium');
+        track('world_switch', { world: w });
+        this.app.persist();
+        closeModal();
+        this.home();
+      },
+      host,
+    );
+    this.on(
+      '[data-a=ok]',
+      () => {
+        sfx.click();
+        closeModal();
+      },
+      host,
+    );
+  }
+
+  /** Celebration when a Core opens the next world; offers to go there right away. */
+  private worldUnlockedModal(w: number): void {
+    const s = this.s;
+    const wd = WORLDS[w];
+    if (!s.worldIntro.includes(w)) s.worldIntro.push(w);
+    this.app.persist();
+    sfx.fanfare();
+    vibrate('heavy');
+    const only = BOOST_IDS.filter((id) => BOOSTS[id].world === w);
+    const tiers = TIERS.slice(wd.baseTier + 1, wd.maxTier + 1)
+      .map((_, k) => `<img src="${this.app.pickUrl(wd.baseTier + 1 + k)}" style="width:44px;height:44px;image-rendering:pixelated">`)
+      .join('');
+    const host = openModal(`<div class="modal panel center world-intro" style="--wc:${wd.color}">
+      <div class="ribbon">${t('worldNew')}</div>
+      <h2 style="font-size:28px;color:${wd.color}" class="ol">${t(`world.${wd.key}`)}</h2>
+      <div class="wblocks">${wd.biomes.map((b) => `<img src="${this.app.blockUrl(b.base[0].item)}">`).join('')}</div>
+      <p class="sub">${t(`worldd.${wd.key}`)}</p>
+      <p><b>${t(`worldf.${wd.key}`)}</b></p>
+      <div class="wblocks">${tiers}</div>
+      <p class="sub">${t('worldNewTiers')}</p>
+      ${only.length ? `<p>${only.map((id) => `${icon(BOOST_ICON[id], 22)} <b>${t(`boost.${id}`)}</b>`).join(' · ')}<br><span class="sub">${t('worldNewBoost')}</span></p>` : ''}
+      <button class="btn gold wide pulse" data-a="go">${icon('play', 28)}<span>${t('worldGo')}</span></button>
+      <button class="btn ghost wide" data-a="later">${t('later')}</button></div>`);
+    this.on(
+      '[data-a=go]',
+      () => {
+        switchWorld(s, w);
+        track('world_switch', { world: w, intro: 1 });
+        this.app.persist();
+        sfx.tierUp();
+        closeModal();
+        this.show('home');
+      },
+      host,
+    );
+    this.on('[data-a=later]', () => this.closeAndNext(), host);
   }
 
   /** "Power-ups for the run": the 3 chosen slots, tap to change. */
@@ -342,10 +445,13 @@ export class Screens {
       const n = boostOwned(s, id);
       const cost = boostCost(s, id);
       const def = BOOSTS[id];
-      return `<div class="card boostcard ${on ? 'on' : ''}" data-pick="${id}">
+      if (!boostOpen(s, id)) return this.lockedBoostCard(id);
+      const here = boostAvailable(s, id);
+      const onlyTag = def.world !== undefined ? `<div class="ds only" style="--wc:${WORLDS[def.world].color}">${icon('world', 14)} ${t('boostOnly', { world: t(`world.${WORLDS[def.world].key}`) })}</div>` : '';
+      return `<div class="card boostcard ${on ? 'on' : ''} ${here ? '' : 'dim'}" data-pick="${id}">
         <div class="ic">${icon(BOOST_ICON[id], 42)}</div>
         <div class="info"><div class="nm">${t(`boost.${id}`)}<span class="lv">${t('boostOwned', { n })}</span></div>
-        <div class="ds">${t(`boostd.${id}`, { s: def.time ?? 0 })} · ${t('boostPerRun', { n: id === 'dynamite' ? SHOP.maxDynamitePerRun : def.perRun })}</div></div>
+        <div class="ds">${t(`boostd.${id}`, { s: def.time ?? 0 })} · ${t('boostPerRun', { n: id === 'dynamite' ? SHOP.maxDynamitePerRun : def.perRun })}</div>${onlyTag}</div>
         <div class="bcol"><span class="take">${on ? icon('check', 26) : t('boostTake')}</span>
         <button class="btn sm ${s.coins >= cost ? 'gold' : 'off'}" data-bbuy="${id}">+1 ${icon('coin', 18)}<span class="${s.coins >= cost ? '' : 'price-bad'}">${fmt(cost)}</span></button></div></div>`;
     }).join('');
@@ -358,6 +464,11 @@ export class Screens {
       '[data-pick]',
       (el) => {
         const id = el.dataset.pick as BoostId;
+        if (!boostAvailable(s, id)) {
+          sfx.error();
+          toast(t('boostOnly', { world: t(`world.${WORLDS[BOOSTS[id].world ?? 0].key}`) }));
+          return;
+        }
         if (toggleLoadout(s, id, LOADOUT_SIZE)) {
           sfx.click();
           this.app.persist();
@@ -378,7 +489,7 @@ export class Screens {
           s.profile.coinsSpent += cost;
           sfx.buy();
           track('purchase_item', { id, cost });
-          if (!s.loadout.includes(id)) toggleLoadout(s, id, LOADOUT_SIZE);
+          if (!s.loadout.includes(id) && boostAvailable(s, id)) toggleLoadout(s, id, LOADOUT_SIZE);
           this.app.persist();
           this.loadoutModal();
           this.bumpWallet();
@@ -396,6 +507,14 @@ export class Screens {
       },
       host,
     );
+  }
+
+  /** A world power-up the player has not reached yet: a teaser, not a purchase. */
+  private lockedBoostCard(id: BoostId): string {
+    const w = WORLDS[BOOSTS[id].world ?? 0];
+    return `<div class="card boostcard dim locked" style="--wc:${w.color}"><div class="ic">${icon(BOOST_ICON[id], 42)}</div>
+      <div class="info"><div class="nm">${t(`boost.${id}`)}</div><div class="ds">${t(`boostd.${id}`, { s: BOOSTS[id].time ?? 0 })}</div>
+      <div class="ds only">${icon('lock', 14)} ${t('boostLocked', { world: t(`world.${w.key}`) })}</div></div></div>`;
   }
 
   private sideHtml(): string {
@@ -511,6 +630,15 @@ export class Screens {
     const levels = rep?.levelsReached ?? [];
     if (rep) rep.levelsReached = [];
     if (modalOpen()) return;
+    const newWorld = Array.from({ length: s.worldsOpen }, (_, i) => i).find((i) => i > 0 && !s.worldIntro.includes(i));
+    if (newWorld !== undefined) {
+      if (levels.length && rep) {
+        rep.levelsReached = levels;
+        this.popupQueue.push(() => this.autoPopups());
+      }
+      this.worldUnlockedModal(newWorld);
+      return;
+    }
     const unlockLevels = levels.filter((l) => featuresAt(l).length > 0);
     if (unlockLevels.length) {
       this.levelUpModal(unlockLevels[unlockLevels.length - 1], unlockLevels);
@@ -619,25 +747,28 @@ export class Screens {
     const s = this.s;
     const cost = forgeCost(s);
     const cur = s.forgeTier;
+    const top = forgeMax(s);
+    const nextMax = WORLDS.find((w) => w.maxTier > top);
     const tiers = TIERS.map((tr, i) => {
+      if (i > top) return '';
       const bonus = [`${icon('hammer', 18)} x${tr.dmg}`, `${icon('heart', 18)} x${tr.dur}`];
       if (tr.coinBonus) bonus.push(`${icon('coin', 18)} +${tr.coinBonus * 100}%`);
       if (tr.fireproof) bonus.push(`${icon('fire', 18)}`);
       return `<div class="card ${i > cur ? 'dim' : ''}"><div class="ic"><img src="${this.app.pickUrl(i)}"></div>
         <div class="info"><div class="nm">${this.app.tierName(i)}</div><div class="ds">${bonus.join(' · ')}</div></div>
         ${i <= cur ? icon('check', 28) : ''}</div>`;
-    }).join('');
+    }).join('') + (nextMax ? `<div class="card dim locked" style="--wc:${nextMax.color}"><div class="ic">${icon('lock', 36)}</div><div class="info"><div class="nm">${t('forgeMore', { n: nextMax.maxTier - top })}</div><div class="ds">${t('forgeMoreDesc', { world: t(`world.${nextMax.key}`) })}</div></div></div>` : '');
     this.set(
       `${this.header(t('forge'))}
        <div class="panel center" style="margin-top:14px">
          <div class="forge-view"><img src="${this.app.pickUrl(cur)}">${
-           cur < MAX_TIER ? `${icon('play', 30)}<img src="${this.app.pickUrl(cur + 1)}">` : ''
+           cur < top ? `${icon('play', 30)}<img src="${this.app.pickUrl(cur + 1)}">` : ''
          }</div>
-         <div class="nm ol" style="font-size:22px;font-weight:900">${this.app.tierName(cur)}${cur < MAX_TIER ? ' → ' + this.app.tierName(cur + 1) : ''}</div>
+         <div class="nm ol" style="font-size:22px;font-weight:900">${this.app.tierName(cur)}${cur < top ? ' → ' + this.app.tierName(cur + 1) : ''}</div>
          <p class="sub">${t('forgeDesc')}</p>
          ${
            cost === null
-             ? `<p class="ol">${t('forgeMax')}</p>`
+             ? `<p class="ol">${nextMax ? t('forgeMoreDesc', { world: t(`world.${nextMax.key}`) }) : t('forgeMax')}</p>`
              : `<button class="btn ${s.coins >= cost ? 'gold' : 'off'} wide" data-a="forge">${icon('fire', 28)}<span>${icon('coin', 24)} <span class="${s.coins >= cost ? '' : 'price-bad'}">${fmt(cost)}</span></span></button>`
          }
        </div>
@@ -862,17 +993,26 @@ export class Screens {
 
   private collection(): void {
     const s = this.s;
-    const cells = COLLECTIBLE.map((key) => {
-      const def = BLOCKS.find((b) => b?.key === key)!;
-      const known = s.discovered.includes(key);
-      return `<div class="cell ${known ? '' : 'unknown'}"><img src="${this.app.blockUrl(def.id)}"><span>${known ? t(`block.${key}`) : t('unknown')}</span></div>`;
+    const worldOf = (id: number) => (id >= B.SAND ? 2 : id >= B.SNOW ? 1 : 0);
+    const cells = WORLDS.map((w, wi) => {
+      const keys = COLLECTIBLE.filter((key) => worldOf(BLOCKS.find((b) => b?.key === key)!.id) === wi);
+      const found = keys.filter((k) => s.discovered.includes(k)).length;
+      const open = wi < s.worldsOpen;
+      const grid = keys
+        .map((key) => {
+          const def = BLOCKS.find((b) => b?.key === key)!;
+          const known = s.discovered.includes(key);
+          return `<div class="cell ${known ? '' : 'unknown'} ${open ? '' : 'sealed'}">${open ? `<img src="${this.app.blockUrl(def.id)}">` : `<div class="seal">${icon('lock', 26)}</div>`}<span>${known ? t(`block.${key}`) : t('unknown')}</span></div>`;
+        })
+        .join('');
+      return `<h2 class="coll-h" style="--wc:${w.color}">${icon('world', 22)} ${t(`world.${w.key}`)} <span>${found}/${keys.length}</span></h2><div class="grid">${grid}</div>`;
     }).join('');
     this.set(
       `${this.header(t('collection'))}
        <div class="panel" style="margin:14px 0 12px"><div class="row" style="display:flex;justify-content:space-between;margin-bottom:6px;font-weight:800">
          <span>${icon('book', 24)} ${t('collectionDesc', { a: s.discovered.length, b: COLLECTIBLE.length })}</span></div>
          ${bar(s.discovered.length / COLLECTIBLE.length, 'cyan')}</div>
-       <div class="grid">${cells}</div>`,
+       ${cells}`,
       'solid',
     );
     this.bindHeader();
@@ -899,6 +1039,7 @@ export class Screens {
          }
          ${(this.app.isUnlocked('boosts') ? BOOST_IDS : (['dynamite'] as BoostId[]))
            .map((id) => {
+             if (!boostOpen(s, id)) return this.lockedBoostCard(id);
              const c = boostCost(s, id);
              return `<div class="card"><div class="ic">${icon(BOOST_ICON[id], 40)}</div><div class="info"><div class="nm">${t(`boost.${id}`)}<span class="lv">${t('owned', { n: boostOwned(s, id) })}</span></div><div class="ds">${t(`boostd.${id}`, { s: BOOSTS[id].time ?? 0 })}</div></div>
                <button class="btn sm ${s.coins >= c ? 'gold' : 'off'}" data-buyb="${id}">${icon('coin', 22)}<span class="${s.coins >= c ? '' : 'price-bad'}">${fmt(c)}</span></button></div>`;
@@ -1144,7 +1285,7 @@ export class Screens {
     if (!r.newRecord && rep.prevBest - r.depth > 0 && rep.prevBest - r.depth <= 15) near = t('nearRecord', { n: rep.prevBest - r.depth });
     else {
       const g = nextGoal(s);
-      if (g && g.biome > 0 && g.depth - r.depth <= 25 && g.depth > r.depth) near = t('nearGoal', { n: g.depth - r.depth, biome: t(`biome.${BIOMES[g.biome].key}`) });
+      if (g && g.biome > 0 && g.depth - r.depth <= 25 && g.depth > r.depth) near = t('nearGoal', { n: g.depth - r.depth, biome: t(`biome.${biomesOf(s.world)[g.biome].key}`) });
     }
     const newBlocks = rep.newBlocks.length
       ? `<div class="panel"><div class="sub" style="margin-bottom:6px">${t('newBlocks')} · +${rep.newBlockGems} ${icon('gem', 18)}</div>
@@ -1157,6 +1298,7 @@ export class Screens {
         <h2 class="center">${r.core ? t('resultsCore') : t('results')}</h2>
         <div class="big-depth">${r.depth} ${t('m')}</div>
         ${r.newRecord ? `<div class="record-badge">${t('newRecord')}</div>` : ''}
+        ${rep.worldOpened > 0 ? `<div class="record-badge" style="background:${WORLDS[rep.worldOpened].color}">${icon('world', 22)} ${t('worldOpened', { world: t(`world.${WORLDS[rep.worldOpened].key}`) })}</div>` : ''}
         ${near ? `<div class="near ol">${near}</div>` : ''}
         <div class="panel rows">
           <div><span>${t('oreCoins')}</span><span class="v">${icon('coin', 22)}${fmt(r.oreCoins * mult)}</span></div>
@@ -1199,7 +1341,7 @@ export class Screens {
     this.on('[data-a=menu]', () => toMenu('home'));
     this.on('[data-a=again]', () => {
       sfx.click();
-      if (this.app.report?.levelsReached.some((l) => featuresAt(l).length)) return toMenu('home');
+      if (this.app.report?.levelsReached.some((l) => featuresAt(l).length) || (this.app.report?.worldOpened ?? -1) > 0) return toMenu('home');
       this.app.startRun();
     });
   }
