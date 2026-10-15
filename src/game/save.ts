@@ -93,6 +93,8 @@ export interface SaveData {
   shaftWidth: number;
   /** Bought elevator stops (depths). */
   liftStops: number[];
+  /** The one-time explanation of the nudge-charges panel was shown. */
+  hintNudgeDone: boolean;
   /** The soft "may we remind you?" question was shown (never nag twice). */
   pushAsked: boolean;
 }
@@ -147,6 +149,7 @@ export function newSave(): SaveData {
     pickSize: 0,
     shaftWidth: 0,
     liftStops: [],
+    hintNudgeDone: false,
     pushAsked: false,
   };
 }

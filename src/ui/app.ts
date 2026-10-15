@@ -53,7 +53,9 @@ export class App {
   private ffUnlocked = 0;
   private hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, fever: false, buffs: '' };
   private frameTimes: number[] = [];
-  private coachState: 'none' | 'tap' | 'bomb' = 'none';
+  private coachState: 'none' | 'tap' | 'bomb' | 'nudges' = 'none';
+  /** Run time at which the nudge-panel hint should appear (0 = not planned this run). */
+  private nudgeHintAt = 0;
   private runStartedAt = 0;
   private tick = 0;
   private activeSince = Date.now();
@@ -277,13 +279,21 @@ export class App {
     this.ffUnlocked = 0;
     this.renderFF();
     this.setCoach(tutorial ? 'tap' : 'none');
+    // Explain the charges panel once, on the 2nd or 3rd run — after the player has felt it run out.
+    this.nudgeHintAt = !this.save.hintNudgeDone && (this.save.runs === 1 || this.save.runs === 2) ? 2.5 : 0;
     track('run_start', { n: this.save.runs + 1, start: stats.startDepth, tier: stats.startTier, tutorial });
   }
 
-  private setCoach(state: 'none' | 'tap' | 'bomb'): void {
+  private setCoach(state: 'none' | 'tap' | 'bomb' | 'nudges'): void {
     this.coachState = state;
     const host = $('coach');
     $('bombBtn').classList.toggle('pulse', state === 'bomb');
+    $('nudges').classList.toggle('spot', state === 'nudges');
+    if (state === 'nudges') {
+      host.innerHTML = `<div class="coach nudge-hint"><div class="bubble">${t('hintNudges')}</div><span class="arrow">${icon('down', 34)}</span></div>`;
+      setTimeout(() => this.coachState === 'nudges' && this.setCoach('none'), 6000);
+      return;
+    }
     if (state === 'tap') {
       host.innerHTML = `<div class="coach tap">${t('hintTap')}<div class="hands"><span class="hand">${icon('hand', 56)}</span><span class="hand b">${icon('hand', 56)}</span></div></div>`;
     } else if (state === 'bomb') {
@@ -538,6 +548,8 @@ export class App {
           this.setCoach('none');
           track('tutorial_first_tap');
         }
+        // tapping while the panel hint is up is the point: keep it a moment, then let it go
+        if (this.coachState === 'nudges') setTimeout(() => this.coachState === 'nudges' && this.setCoach('none'), 2500);
         break;
       case 'combo':
         // the HUD combo counter already celebrates this — no banner
@@ -659,7 +671,20 @@ export class App {
     }
     if (r.nudges !== h.nudges) {
       h.nudges = r.nudges;
-      $('nudges').innerHTML = Array.from({ length: r.stats.nudgeCharges }, (_, i) => `<i class="${i < r.nudges ? '' : 'empty'}"></i>`).join('');
+      $('nudges').innerHTML = Array.from({ length: r.stats.nudgeCharges }, (_, i) => `<i class="${i < r.nudges ? '' : 'empty'}"><b></b></i>`).join('');
+    }
+    // the next empty charge visibly fills up while it recharges
+    const recharging = $('nudges').children[r.nudges] as HTMLElement | undefined;
+    if (recharging) {
+      const fill = recharging.firstElementChild as HTMLElement | null;
+      fill?.style.setProperty('height', `${Math.min(100, (r.nudgeTimer / r.stats.nudgeRegen) * 100).toFixed(0)}%`);
+    }
+    if (this.nudgeHintAt && r.time >= this.nudgeHintAt && this.coachState === 'none') {
+      this.nudgeHintAt = 0;
+      this.save.hintNudgeDone = true;
+      this.persist();
+      this.setCoach('nudges');
+      track('hint_nudges', { run: this.save.runs + 1 });
     }
     if (r.dynamite !== h.bombs) {
       h.bombs = r.dynamite;
