@@ -8,8 +8,8 @@ export const CAMPAIGN_DEPTH = 1000;
 export const PHYS = {
   // Tuned by `npm run playtest`: a heavy, readable chop-chop fall (≈ half a screen per second
   // at full speed), not a drill through butter.
-  gravity: 13,
-  maxFall: 9,
+  gravity: 11,
+  maxFall: 8,
   radius: 0.38,
   restitution: 0.4,
   minBounce: 3.5,
@@ -33,14 +33,19 @@ export const PHYS = {
 };
 
 export const RUN = {
-  baseDurability: 100,
-  durPerLevel: 8,
+  baseDurability: 27,
+  durPerLevel: 5,
   /** Block HP multiplier grows with depth: hp × (1 + depth / hpDepthDiv) ^ hpDepthPow. */
   hpDepthDiv: 80,
   hpDepthPow: 1.2,
   /** Workbenches can raise the tier at most this much above the forge tier per run. */
   /** Base in-run tier-ups allowed above the forge tier (+1 more per 3 forge tiers). */
   workbenchTierCap: 1,
+  /**
+   * The first (tutorial) run is a short demo: ~15–20 s that shows the upgrade, a chest
+   * and TNT, then ends — durability is scaled down only for that run.
+   */
+  tutorialDurability: 30,
   comboWindow: 1.2,
   comboStep: 0.025,
   comboCap: 40,
@@ -135,9 +140,9 @@ export const SHOP = {
  */
 export const MEGA = {
   /** Pickaxe size: each hit also strikes this many extra blocks in the same row. */
-  size: { costs: [3000, 40000, 500000, 4000000, 30000000], max: 5 },
+  size: { costs: [2000, 26000, 340000, 3000000, 22000000], max: 5 },
   /** Shaft width: +2 columns per level. */
-  width: { costs: [2500, 35000, 450000, 3500000, 25000000], max: 5, step: 2 },
+  width: { costs: [1700, 23000, 300000, 2600000, 19000000], max: 5, step: 2 },
 };
 export type MegaId = keyof typeof MEGA;
 

@@ -11,6 +11,8 @@ export interface Settings {
   shake: boolean;
   particles: 'high' | 'low';
   music: boolean;
+  /** 'groove' = upbeat (default), 'calm' = ambient. */
+  musicStyle: 'groove' | 'calm';
   notifications: boolean;
 }
 
@@ -125,7 +127,7 @@ export function newSave(): SaveData {
     runs: 0,
     blocksBroken: 0,
     discovered: [],
-    settings: { sound: true, vibration: true, lang: 'auto', shake: true, particles: 'high', music: true, notifications: true },
+    settings: { sound: true, vibration: true, lang: 'auto', shake: true, particles: 'high', music: true, musicStyle: 'groove', notifications: true },
     xp: 0,
     level: 1,
     life: freshLife(),

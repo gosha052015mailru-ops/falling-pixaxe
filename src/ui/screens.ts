@@ -827,7 +827,7 @@ export class Screens {
        <div class="panel" style="margin-top:14px">
          <div class="settings-row"><span>${icon('star', 28)}${t('difficulty')}</span><button class="btn sm purple" data-a="diff">${t(`diff.${this.s.difficulty || 'normal'}`)}</button></div>
          <div class="settings-row"><span>${icon('sound', 28)}${t('sound')}</span><button class="btn sm ${st.sound ? '' : 'ghost'}" data-a="sound">${onOff(st.sound)}</button></div>
-         <div class="settings-row"><span>${icon('play', 28)}${t('music')}</span><button class="btn sm ${st.music ? '' : 'ghost'}" data-a="music">${onOff(st.music)}</button></div>
+         <div class="settings-row"><span>${icon('play', 28)}${t('music')}</span><button class="btn sm ${st.music ? (st.musicStyle === 'calm' ? 'blue' : '') : 'ghost'}" data-a="music">${st.music ? t(st.musicStyle === 'calm' ? 'musicCalm' : 'musicGroove') : t('off')}</button></div>
          <div class="settings-row"><span>${icon('gift', 28)}${t('notifications')}${isNative ? '' : `<br><small class="sub">${t('pushUnsupported')}</small>`}</span><button class="btn sm ${st.notifications ? '' : 'ghost'}" data-a="push">${onOff(st.notifications)}</button></div>
          <div class="settings-row"><span>${icon('vibrate', 28)}${t('vibration')}</span><button class="btn sm ${st.vibration ? '' : 'ghost'}" data-a="vib">${onOff(st.vibration)}</button></div>
          <div class="settings-row"><span>${icon('shake', 28)}${t('shakeOpt')}</span><button class="btn sm ${st.shake ? '' : 'ghost'}" data-a="shake">${onOff(st.shake)}</button></div>
@@ -867,9 +867,17 @@ export class Screens {
       sfx.click();
       save();
     });
+    // Upbeat → Calm → Off → Upbeat
     this.on('[data-a=music]', () => {
-      st.music = !st.music;
+      if (st.music && st.musicStyle === 'groove') st.musicStyle = 'calm';
+      else if (st.music) st.music = false;
+      else {
+        st.music = true;
+        st.musicStyle = 'groove';
+      }
+      music.setStyle(st.musicStyle);
       music.setEnabled(st.music, 'menu');
+      track('music_setting', { on: st.music, style: st.musicStyle });
       sfx.click();
       save();
     });

@@ -67,6 +67,7 @@ export class App {
     setLang(st.lang);
     sfx.enabled = st.sound;
     music.enabled = st.music;
+    music.style = st.musicStyle;
     setVibration(st.vibration);
     this.renderer = new Renderer($<HTMLCanvasElement>('canvas'));
     this.applyQuality();

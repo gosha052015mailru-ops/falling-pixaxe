@@ -154,7 +154,7 @@ export class Run {
   constructor(readonly init: RunInit) {
     this.stats = init.stats;
     this.rng = new Rng(init.seed);
-    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.stats.hpMult, init.stats.worldWidth);
+    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.tutorial ? 1 : init.stats.hpMult, init.stats.worldWidth);
     this.x = this.world.width / 2;
     this.y = init.stats.startDepth - 3;
     this.vx = this.rng.range(-1.5, 1.5);
@@ -177,11 +177,17 @@ export class Run {
       [cx - 1, 8, B.WORKBENCH],
       [cx, 8, B.WORKBENCH],
       [cx + 1, 8, B.WORKBENCH],
-      [cx, 16, B.CHEST],
-      [cx, 24, B.TNT],
+      // repair right after: teaches the anvil and stretches the 27-durability demo to ~15–20 s
+      [cx - 1, 11, B.ANVIL],
+      [cx, 11, B.ANVIL],
+      [cx + 1, 11, B.ANVIL],
+      [cx, 14, B.CHEST],
+      [cx, 18, B.TNT],
+      [cx - 1, 19, B.TNT],
+      [cx + 1, 19, B.TNT],
     ];
-    // plain dirt above the workbench: the first seconds teach the chop rhythm
-    for (let y = 1; y < 8; y++) for (let x = cx - 1; x <= cx + 1; x++) w.set(x, y, B.DIRT);
+    // soft dirt column through all the demo events, so every new player sees the same short show
+    for (let y = 1; y < 22; y++) for (let x = cx - 2; x <= cx + 2; x++) w.set(x, y, B.DIRT);
     for (const [x, y, id] of place) w.set(x, y, id);
     this.hold = true;
   }
@@ -229,7 +235,9 @@ export class Run {
   }
 
   private computeMaxDur(tier: number): number {
-    return Math.round(this.stats.maxDurBase * TIERS[tier].dur);
+    // the tutorial is the same short demo on every difficulty
+    const base = this.init.tutorial ? RUN.tutorialDurability : this.stats.maxDurBase;
+    return Math.round(base * TIERS[tier].dur);
   }
 
   /** Multiplier for the next heal; each heal makes the following ones weaker. */
@@ -573,7 +581,9 @@ export class Run {
         break;
       }
       case 'anvil': {
-        const amount = Math.min(this.maxDur - this.durability, Math.round(this.maxDur * RUN.anvilHeal * this.healFactor()));
+        // in the tutorial the anvil fully repairs: a clear lesson and a 15–20 s demo
+        const heal = this.init.tutorial ? this.maxDur : Math.round(this.maxDur * RUN.anvilHeal * this.healFactor());
+        const amount = Math.min(this.maxDur - this.durability, heal);
         this.durability += amount;
         this.emit({ t: 'heal', amount });
         break;

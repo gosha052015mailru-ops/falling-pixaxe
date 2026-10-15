@@ -122,7 +122,11 @@ describe('new player pacing (playtest guards)', () => {
     }
     const r = run.result();
     expect(r.tierUps).toBe(1);
-    expect(r.time).toBeGreaterThan(25);
+    // the tutorial is a short 15–20 s demo
+    expect(r.time).toBeGreaterThan(11);
+    expect(r.time).toBeLessThan(24);
+    expect(r.chests).toBeGreaterThan(0);
+    expect(r.tnt).toBeGreaterThan(0);
     expect(maxV).toBeLessThan(12);
     applyResult(s, r);
     expect(s.level).toBe(1);
