@@ -1,0 +1,6 @@
+{
+  "appId": "com.fallingpickaxe.game",
+  "appName": "Falling Pickaxe",
+  "webDir": "dist",
+  "android": { "backgroundColor": "#14101c" }
+}
