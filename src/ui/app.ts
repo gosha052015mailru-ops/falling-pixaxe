@@ -279,8 +279,9 @@ export class App {
     this.ffUnlocked = 0;
     this.renderFF();
     this.setCoach(tutorial ? 'tap' : 'none');
-    // Explain the charges panel once, on the 2nd or 3rd run — after the player has felt it run out.
-    this.nudgeHintAt = !this.save.hintNudgeDone && (this.save.runs === 1 || this.save.runs === 2) ? 2.5 : 0;
+    // Explain the charges panel once: in the tutorial right after the first tap and the upgrade
+    // banner (~3.5 s); runs 2–3 are only a fallback if it was missed.
+    this.nudgeHintAt = this.save.hintNudgeDone ? 0 : tutorial ? 3.5 : this.save.runs <= 2 ? 2.5 : 0;
     track('run_start', { n: this.save.runs + 1, start: stats.startDepth, tier: stats.startTier, tutorial });
   }
 
