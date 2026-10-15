@@ -169,7 +169,7 @@ export function deriveStats(save: SaveData): RunStats {
     luckMult: 1 + 0.05 * u.luck,
     critChance: 0.02 * u.crit,
     nudgeCharges: 2 + Math.floor(u.control / 2),
-    nudgeRegen: 2.5 * Math.pow(0.92, u.control),
+    nudgeRegen: 4.5 * Math.pow(0.92, u.control),
     blastRadius: RUN.dynamiteRadius + RUN.dynamiteRadiusPerLvl * u.blast,
     maxFallMult: 1 + 0.04 * u.weight,
     startTier: save.forgeTier,

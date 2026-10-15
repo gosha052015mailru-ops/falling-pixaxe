@@ -1779,3 +1779,47 @@ h2 {
   margin: 0 0 4px 30px;
   transform: rotate(180deg);
 }
+
+/* breakthrough power meter (shown while holding) */
+.power {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translateX(-50%);
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: min(70%, 280px);
+  pointer-events: none;
+  font-size: 22px;
+  font-weight: 900;
+  color: #fff;
+  -webkit-text-stroke: 5px var(--ink);
+  paint-order: stroke fill;
+}
+.power .bar {
+  flex: 1;
+  height: 26px;
+}
+.power .bar > i {
+  background: linear-gradient(90deg, #5ee06f, #ffd23f 60%, #ff4d6a);
+  background-size: 280px 100%;
+  transition: none;
+}
+.power .bar > span {
+  font-size: 13px;
+}
+.power .arrow-l,
+.power .arrow-r {
+  opacity: 0.25;
+}
+.power.left .arrow-l,
+.power:not(.left) .arrow-r {
+  opacity: 1;
+  color: var(--cyan);
+}
+.power.max .bar {
+  box-shadow: 0 0 0 3px #fff, 0 0 20px 6px rgba(255, 77, 106, 0.8);
+  animation: pulse 0.35s ease-in-out infinite;
+}

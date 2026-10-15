@@ -151,6 +151,13 @@ export class Sfx {
     this.noise(0.12, 0.12, 800, 'bandpass', 2400);
   }
 
+  /** Breakthrough dash: a rising whoosh, bigger with power. */
+  dash(power: number): void {
+    if (!this.gate('dash', 0.05)) return;
+    this.noise(0.18 + 0.2 * power, 0.12 + 0.18 * power, 500, 'bandpass', 2600 + 2400 * power);
+    this.tone(160, 0.12 + 0.1 * power, 'sine', 0.12 + 0.12 * power, 60);
+  }
+
   shatter(): void {
     if (!this.gate('shatter', 0.2)) return;
     this.noise(0.5, 0.35, 5000, 'highpass', 800);

@@ -23,6 +23,18 @@ export const PHYS = {
   maxStep: 0.2,
   /** Sideways nudge: a controlled shift of about one column. */
   nudgeImpulse: 4,
+  /**
+   * Breakthrough dash (hold to charge, release): rushes diagonally down, smashing blocks
+   * WITHOUT durability cost. power 0..1 comes from how long the press was held.
+   */
+  dashChargeTime: 0.9,
+  dashSpeed: [7, 14] as [number, number],
+  dashBlocks: [1, 5] as [number, number],
+  /** Dash damage per block = pickaxe damage × this (by power). A block it can't break stops it. */
+  dashDamage: [2, 5] as [number, number],
+  dashTime: [0.15, 0.5] as [number, number],
+  /** Downward share of the dash direction (the rest is sideways). */
+  dashDown: 0.55,
   impactRef: 6,
   impactMin: 0.6,
   impactMax: 1.6,
@@ -37,7 +49,7 @@ export const RUN = {
   durPerLevel: 5,
   /** Block HP multiplier grows with depth: hp × (1 + depth / hpDepthDiv) ^ hpDepthPow. */
   hpDepthDiv: 80,
-  hpDepthPow: 1.2,
+  hpDepthPow: 1.3,
   /** Workbenches can raise the tier at most this much above the forge tier per run. */
   /** Base in-run tier-ups allowed above the forge tier (+1 more per 3 forge tiers). */
   workbenchTierCap: 1,
@@ -140,9 +152,9 @@ export const SHOP = {
  */
 export const MEGA = {
   /** Pickaxe size: each hit also strikes this many extra blocks in the same row. */
-  size: { costs: [2000, 26000, 340000, 3000000, 22000000], max: 5 },
+  size: { costs: [2000, 36000, 340000, 3000000, 22000000], max: 5 },
   /** Shaft width: +2 columns per level. */
-  width: { costs: [1700, 23000, 300000, 2600000, 19000000], max: 5, step: 2 },
+  width: { costs: [1700, 32000, 300000, 2600000, 19000000], max: 5, step: 2 },
 };
 export type MegaId = keyof typeof MEGA;
 

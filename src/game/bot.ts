@@ -43,7 +43,7 @@ export class Bot {
     }
     const target = bestX + 0.5;
     if (Math.abs(target - run.x) > 0.8 && Math.sign(target - run.x) !== Math.sign(run.vx || 0.0001) ) {
-      run.nudge(target > run.x ? 1 : -1);
+      run.dash(target > run.x ? 1 : -1, run.rng.range(0.2, 0.9));
     }
   }
 }

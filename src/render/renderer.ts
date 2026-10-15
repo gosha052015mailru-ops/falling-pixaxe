@@ -3,6 +3,7 @@ import { BIOMES, WORLD_W, biomeAt, biomeIndex } from '../game/config';
 import type { GameEvent, Run } from '../game/run';
 import { blockHp } from '../game/world';
 import { fmt } from '../ui/format';
+import { t } from '../ui/i18n';
 import { Particles } from './particles';
 import { buildTextures, shade, type Textures } from './textures';
 
@@ -29,6 +30,8 @@ export class Renderer {
   private trail: { x: number; y: number }[] = [];
   private time = 0;
   private lastOhYes = -10;
+  /** Seconds of the white dash streak left. */
+  private dashGlow = 0;
   /** Settings / adaptive quality. */
   maxDpr = 3;
   shakeEnabled = true;
@@ -173,6 +176,14 @@ export class Renderer {
         this.doFlash('#5dff7a', 0.8);
         fx.burst(this.lastPickX, this.lastPickY, ['#5dff7a', '#fff', '#ffe066'], 60, 10, 0.15, 3, true);
         break;
+      case 'dash':
+        this.shake(0.08 + 0.2 * e.power);
+        fx.burst(this.lastPickX - e.dir * 0.6, this.lastPickY - 0.4, ['#ffffff', '#6ff3f0'], 8 + Math.round(16 * e.power), 6, 0.12, 0, true);
+        this.dashGlow = 0.25 + 0.4 * e.power;
+        break;
+      case 'dashEnd':
+        if (e.broken >= 3) fx.text(this.lastPickX, this.lastPickY - 1, `${t('breakthrough')} ×${e.broken}!`, '#6ff3f0', 0.6);
+        break;
       case 'nudge':
         fx.burst(this.lastPickX - e.dir * 0.5, this.lastPickY, ['rgba(255,255,255,0.8)'], 5, 3, 0.1, 0);
         break;
@@ -200,10 +211,11 @@ export class Renderer {
     this.camY += (target - this.camY) * Math.min(1, dt * 6);
     this.shakeAmp *= Math.exp(-dt * 9);
     this.flash = Math.max(0, this.flash - dt * 2.2);
+    this.dashGlow = Math.max(0, this.dashGlow - dt);
     this.fx.update(dt);
     const speed = Math.hypot(run.vx, run.vy);
     this.trail.push({ x: run.x, y: run.y });
-    if (this.trail.length > (speed > 9 ? 8 : 3)) this.trail.shift();
+    if (this.trail.length > (this.dashGlow > 0 ? 12 : speed > 9 ? 8 : 3)) this.trail.shift();
   }
 
   draw(run: Run): void {

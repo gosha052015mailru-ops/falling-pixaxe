@@ -4,7 +4,7 @@ import { BIOME_THEMES, music, type ThemeId } from '../audio/music';
 import { sfx } from '../audio/sfx';
 import { blockDef } from '../game/blocks';
 import { Bot } from '../game/bot';
-import { BIOMES, FAST_FORWARD, TIERS, biomeIndex } from '../game/config';
+import { BIOMES, FAST_FORWARD, PHYS, TIERS, biomeIndex } from '../game/config';
 import { addCoins, deriveStats } from '../game/economy';
 import { trackQuests, unlocked } from '../game/meta';
 import { addPlayTime, eventGoalFor, recordRun, startSession, userProperties } from '../game/profile';
@@ -419,7 +419,54 @@ export class App {
     requestAnimationFrame((n) => this.loop(n));
   }
 
+  // ───────────────────────── breakthrough charge ─────────────────────────
+
+  private charge: { dir: -1 | 1; start: number } | null = null;
+
+  /** Press: the first tap of the tutorial just releases the pickaxe; otherwise start charging. */
+  private startCharge(dir: -1 | 1): void {
+    if (this.run.hold) {
+      this.run.nudge(dir);
+      return;
+    }
+    if (this.run.nudges <= 0) {
+      sfx.error();
+      return;
+    }
+    this.charge = { dir, start: performance.now() };
+    this.renderPower(0);
+  }
+
+  private chargePower(): number {
+    return this.charge ? Math.min(1, (performance.now() - this.charge.start) / 1000 / PHYS.dashChargeTime) : 0;
+  }
+
+  /** Release: dash with the charged power. */
+  private releaseCharge(): void {
+    if (!this.charge) return;
+    const { dir } = this.charge;
+    const power = this.chargePower();
+    this.charge = null;
+    $('power').classList.add('hidden');
+    if (this.mode === 'play' && this.run.dash(dir, power)) vibrate(power > 0.7 ? 'heavy' : 'light');
+  }
+
+  private renderPower(p: number): void {
+    const el = $('power');
+    el.classList.remove('hidden');
+    el.classList.toggle('max', p >= 1);
+    el.classList.toggle('left', this.charge?.dir === -1);
+    $('powerFill').style.setProperty('--p', `${(p * 100).toFixed(0)}%`);
+    $('powerText').textContent = p >= 1 ? t('powerMax') : t('power');
+  }
+
   private frame(dt: number): void {
+    if (this.charge) {
+      if (this.mode !== 'play') {
+        this.charge = null;
+        $('power').classList.add('hidden');
+      } else this.renderPower(this.chargePower());
+    }
     const run = this.run;
     const simulate = this.mode === 'play' || this.mode === 'dying' || (this.mode === 'menu' && this.bot !== null);
 
@@ -555,6 +602,12 @@ export class App {
         sfx.fanfare();
         vibrate('heavy');
         this.banner(`<div class="t">${t('core')}</div>`, '#ff7ad9');
+        break;
+      case 'dash':
+        sfx.dash(e.power);
+        break;
+      case 'dashEnd':
+        if (e.broken >= 3) sfx.chest();
         break;
       case 'nudge':
         sfx.nudge();
@@ -777,8 +830,11 @@ export class App {
       sfx.unlock();
       if (this.mode !== 'play') return;
       const rect = canvas.getBoundingClientRect();
-      this.run.nudge(ev.clientX - rect.left < rect.width / 2 ? -1 : 1);
+      this.startCharge(ev.clientX - rect.left < rect.width / 2 ? -1 : 1);
     });
+    // release anywhere (finger may slide off the canvas)
+    window.addEventListener('pointerup', () => this.releaseCharge());
+    window.addEventListener('pointercancel', () => this.releaseCharge());
     $('bombBtn').addEventListener('pointerdown', (ev) => {
       ev.stopPropagation();
       if (this.mode === 'play' && this.run.useDynamite()) vibrate('medium');
@@ -794,10 +850,13 @@ export class App {
         if (ev.key === 'Escape') this.back();
         return;
       }
-      if (ev.key === 'ArrowLeft' || ev.key === 'a') this.run.nudge(-1);
-      else if (ev.key === 'ArrowRight' || ev.key === 'd') this.run.nudge(1);
+      if (ev.key === 'ArrowLeft' || ev.key === 'a') !ev.repeat && this.startCharge(-1);
+      else if (ev.key === 'ArrowRight' || ev.key === 'd') !ev.repeat && this.startCharge(1);
       else if (ev.key === ' ' || ev.key === 'ArrowDown') this.run.useDynamite();
       else if (ev.key === 'Escape' || ev.key === 'p') this.pause();
+    });
+    window.addEventListener('keyup', (ev) => {
+      if (['ArrowLeft', 'ArrowRight', 'a', 'd'].includes(ev.key)) this.releaseCharge();
     });
     window.addEventListener('resize', () => this.renderer.resize());
     document.addEventListener('visibilitychange', () => (document.hidden ? this.onBackground() : this.onForeground()));

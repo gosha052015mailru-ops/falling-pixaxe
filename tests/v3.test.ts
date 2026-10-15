@@ -124,7 +124,7 @@ describe('new player pacing (playtest guards)', () => {
     expect(r.tierUps).toBe(1);
     // the tutorial is a short 15–20 s demo
     expect(r.time).toBeGreaterThan(11);
-    expect(r.time).toBeLessThan(24);
+    expect(r.time).toBeLessThan(28); // free breakthroughs may stretch it a little
     expect(r.chests).toBeGreaterThan(0);
     expect(r.tnt).toBeGreaterThan(0);
     expect(maxV).toBeLessThan(12);
@@ -231,5 +231,46 @@ describe('tier-based wear', () => {
     for (let i = 0; i < 120 * 3 && !run.over; i++) run.step(1 / 120);
     expect(run.blocks).toBeGreaterThan(5);
     expect(before - run.durability).toBeLessThan(run.blocks * 0.1);
+  });
+});
+
+describe('breakthrough dash', () => {
+  const setup = () => {
+    const s = newSave();
+    const run = new Run({ seed: 6, stats: deriveStats(s), bestDepth: 0, milestones: [] });
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, B.DIRT);
+    for (let y = 0; y < 6; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, B.AIR);
+    run.x = 2.5;
+    run.y = 5.5;
+    run.vx = 0;
+    run.vy = 0;
+    return run;
+  };
+  it('smashes several blocks without spending durability; power gives more', () => {
+    const weak = setup();
+    const d0 = weak.durability;
+    const b0 = weak.blocks;
+    expect(weak.dash(1, 0)).toBe(true);
+    for (let i = 0; i < 120 && weak.dashing; i++) weak.step(1 / 120);
+    weak.step(1 / 120); // the contact right after the dash is free too
+    const weakBlocks = weak.blocks - b0;
+    expect(weak.durability).toBe(d0); // nothing spent while dashing
+    const strong = setup();
+    const sb0 = strong.blocks;
+    const sd0 = strong.durability;
+    strong.dash(1, 1);
+    for (let i = 0; i < 120 && strong.dashing; i++) strong.step(1 / 120);
+    expect(strong.durability).toBe(sd0);
+    expect(strong.blocks - sb0).toBeGreaterThan(weakBlocks);
+    expect(strong.blocks - sb0).toBeGreaterThanOrEqual(4);
+  });
+  it('is stopped by blocks too hard for it and uses a charge', () => {
+    const run = setup();
+    for (let y = 6; y < 40; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, B.OBSIDIAN);
+    const charges = run.nudges;
+    run.dash(1, 1);
+    for (let i = 0; i < 60; i++) run.step(1 / 120);
+    expect(run.nudges).toBe(charges - 1);
+    expect(run.world.get(3, 6)).toBe(B.OBSIDIAN);
   });
 });

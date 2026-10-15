@@ -37,6 +37,8 @@ export type GameEvent =
   | { t: 'shatter'; x: number; y: number }
   | { t: 'core' }
   | { t: 'nudge'; dir: number }
+  | { t: 'dash'; dir: number; power: number; blocks: number }
+  | { t: 'dashEnd'; broken: number }
   | { t: 'dynamite' }
   | { t: 'combo'; n: number }
   | { t: 'fever' }
@@ -340,6 +342,52 @@ export class Run {
     return true;
   }
 
+  /** Breakthrough dash: power 0..1 (from hold time). Uses one charge, costs no durability. */
+  dash(dir: -1 | 1, power: number): boolean {
+    if (this.hold) return this.nudge(dir);
+    if (this.over || this.nudges <= 0) return false;
+    this.nudges--;
+    const p = Math.max(0, Math.min(1, power));
+    const lerp = (r: [number, number]) => r[0] + (r[1] - r[0]) * p;
+    const speed = lerp(PHYS.dashSpeed);
+    const down = PHYS.dashDown;
+    const side = Math.sqrt(1 - down * down);
+    this.dashVx = dir * side * speed;
+    this.dashVy = down * speed;
+    this.dashLeft = Math.round(lerp(PHYS.dashBlocks));
+    this.dashTimer = lerp(PHYS.dashTime);
+    this.dashDamage = this.damagePerHit * lerp(PHYS.dashDamage);
+    this.dashBroken = 0;
+    this.vx = this.dashVx;
+    this.vy = this.dashVy;
+    this.angVel = dir * (14 + 16 * p);
+    this.emit({ t: 'dash', dir, power: p, blocks: this.dashLeft });
+    return true;
+  }
+
+  get dashing(): boolean {
+    return this.dashTimer > 0;
+  }
+
+  private dashTimer = 0;
+  private dashLeft = 0;
+  private dashVx = 0;
+  private dashVy = 0;
+  private dashBroken = 0;
+  private dashDamage = 0;
+
+  /** A short no-wear window right after a dash, so the follow-up contact is free too. */
+  private dashGrace = 0;
+
+  private endDash(): void {
+    if (this.dashTimer <= 0) return;
+    this.dashTimer = 0;
+    this.dashGrace = 0.15;
+    this.vx *= 0.35;
+    this.vy = Math.max(this.vy * 0.5, 2.5);
+    this.emit({ t: 'dashEnd', broken: this.dashBroken });
+  }
+
   useDynamite(): boolean {
     if (this.over || this.hold || this.dynamite <= 0) return false;
     this.dynamite--;
@@ -371,6 +419,7 @@ export class Run {
     }
     if (this.furnaceTimer > 0) this.furnaceTimer -= dt;
     if (this.feverTimer > 0) this.feverTimer -= dt;
+    if (this.dashGrace > 0) this.dashGrace -= dt;
     if (this.goldTimer > 0) this.goldTimer -= dt;
     if (this.superTimer > 0) this.superTimer -= dt;
     if (this.nudges < this.stats.nudgeCharges) {
@@ -399,8 +448,19 @@ export class Run {
   }
 
   private substep(h: number): void {
-    this.vy = Math.min(this.vy + PHYS.gravity * h, this.maxFall);
-    this.vx *= Math.exp(-PHYS.airDragX * h);
+    if (this.dashTimer > 0) {
+      // the dash ignores gravity and drag: a straight, committed rush
+      this.dashTimer -= h;
+      this.vx = this.dashVx;
+      this.vy = this.dashVy;
+      if (this.dashTimer <= 0) {
+        this.dashTimer = 1e-9;
+        this.endDash();
+      }
+    } else {
+      this.vy = Math.min(this.vy + PHYS.gravity * h, this.maxFall);
+      this.vx *= Math.exp(-PHYS.airDragX * h);
+    }
     if (this.inLava) {
       const k = Math.exp(-PHYS.lavaDrag * h);
       this.vx *= k;
@@ -469,6 +529,23 @@ export class Run {
       this.y += ny * pen;
       return;
     }
+
+    // breakthrough: smash anything breakable in the way, no durability spent
+    if (this.dashTimer > 0 && !wall && def.special !== 'slime') {
+      if (def.special || (def.blastable && Number.isFinite(def.hp))) {
+        if (def.special || this.world.damage(cx, cy, this.dashDamage)) {
+          this.breakBlock(cx, cy, 'pick', false);
+          this.dashBroken++;
+          if (--this.dashLeft <= 0) this.endDash();
+          return;
+        }
+        // too hard to smash through: the dash dents it and stops
+        const frac = Math.max(0, this.world.hpAt(cx, cy) / blockHp(id, cy, this.world.hpMult));
+        this.emit({ t: 'hit', x: cx, y: cy, id, dmg: this.dashDamage, crit: false, frac, speed: vn });
+      }
+      this.endDash(); // obsidian / bedrock / a block too hard stop the dash
+    }
+    if (wall && this.dashTimer > 0) this.endDash();
 
     if (wall) {
       this.x += nx * pen;
@@ -560,7 +637,7 @@ export class Run {
   }
 
   private spendDurability(cost: number): void {
-    if (cost <= 0) return;
+    if (cost <= 0 || this.dashGrace > 0) return;
     const save = Math.min(0.75, 0.25 * this.enchants.unbreaking);
     if (save > 0 && this.rng.chance(save)) return;
     this.durability -= cost;
