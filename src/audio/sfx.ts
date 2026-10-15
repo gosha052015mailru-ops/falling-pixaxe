@@ -8,6 +8,15 @@ export class Sfx {
   private lastPlay = new Map<string, number>();
   enabled = true;
 
+  /** Shared audio context (null until the first user gesture). */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  get noiseBuffer(): AudioBuffer | null {
+    return this.noiseBuf;
+  }
+
   /** Must be called from a user gesture (autoplay policy). */
   unlock(): void {
     if (!this.ctx) {

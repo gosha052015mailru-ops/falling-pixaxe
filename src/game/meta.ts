@@ -7,6 +7,7 @@ import { BLOCKS, B } from './blocks';
 import { CAMPAIGN_DEPTH } from './config';
 import { addCoins } from './economy';
 import { Rng } from './rng';
+import { dayKey } from './time';
 import type { Quest, SaveData } from './save';
 
 const HOUR = 3600_000;
@@ -125,10 +126,7 @@ export function openChest(save: SaveData, rarity: ChestRarity, rng: Rng): Reward
 
 // ───────────────────────── daily login ─────────────────────────
 
-export function dayKey(now: number): string {
-  const d = new Date(now);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
+export { dayKey };
 
 function prevDayKey(now: number): string {
   const d = new Date(now);

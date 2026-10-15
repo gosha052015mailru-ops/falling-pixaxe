@@ -154,7 +154,7 @@ export class Run {
   constructor(readonly init: RunInit) {
     this.stats = init.stats;
     this.rng = new Rng(init.seed);
-    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult);
+    this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.stats.hpMult);
     this.x = this.world.width / 2;
     this.y = init.stats.startDepth - 3;
     this.vx = this.rng.range(-1.5, 1.5);
@@ -433,7 +433,7 @@ export class Run {
     } else {
       this.x += nx * pen;
       this.y += ny * pen;
-      const frac = Number.isFinite(before) ? Math.max(0, this.world.hpAt(cx, cy) / blockHp(id, cy)) : 1;
+      const frac = Number.isFinite(before) ? Math.max(0, this.world.hpAt(cx, cy) / blockHp(id, cy, this.world.hpMult)) : 1;
       this.emit({ t: 'hit', x: cx, y: cy, id, dmg, crit, frac, speed: vn });
       if (++this.bouncesSinceBreak === 3) this.emit({ t: 'stuck' });
       this.reflect(nx, ny, vn, PHYS.restitution);

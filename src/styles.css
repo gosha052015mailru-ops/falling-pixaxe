@@ -1585,3 +1585,41 @@ h2 {
 #side {
   animation: none !important;
 }
+
+/* header title never wraps */
+.topbar h2 {
+  min-width: 0;
+  font-size: clamp(20px, 6vw, 28px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 4px 2px;
+}
+
+/* KPI tiles (profile) */
+.kpis {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  background: linear-gradient(var(--panel-1), var(--panel-2));
+  box-shadow: 0 3px 0 var(--ink);
+}
+.kpi b {
+  font-size: 22px;
+  font-weight: 900;
+  -webkit-text-stroke: 5px var(--ink);
+  paint-order: stroke fill;
+}
+.kpi span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}

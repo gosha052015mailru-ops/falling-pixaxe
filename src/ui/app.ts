@@ -1,14 +1,17 @@
 import { App as CapApp } from '@capacitor/app';
-import { track } from '../analytics';
+import { flush, setUserProps, startAnalytics, track } from '../analytics';
+import { BIOME_THEMES, music, type ThemeId } from '../audio/music';
 import { sfx } from '../audio/sfx';
 import { blockDef } from '../game/blocks';
 import { Bot } from '../game/bot';
-import { BIOMES, TIERS } from '../game/config';
+import { BIOMES, TIERS, biomeIndex } from '../game/config';
 import { addCoins, deriveStats } from '../game/economy';
 import { trackQuests, unlocked } from '../game/meta';
+import { addPlayTime, recordRun, startSession, userProperties } from '../game/profile';
 import { applyResult, type ProgressReport } from '../game/progress';
 import { Run, type GameEvent, type RunResult } from '../game/run';
 import { clockNow, loadSave, writeSave, type SaveData } from '../game/save';
+import { clearPush, listenPushOpens, schedulePush } from '../notifications';
 import { isNative, setVibration, showRewardedAd, vibrate } from '../platform';
 import { Renderer } from '../render/renderer';
 import { makePickaxe } from '../render/textures';
@@ -22,6 +25,8 @@ type Mode = 'menu' | 'play' | 'paused' | 'dying' | 'revive' | 'results';
 
 const FIXED_DT = 1 / 120;
 const MAX_STEPS = 8;
+/** Background longer than this starts a new analytics session (industry default: 30 min). */
+const SESSION_TIMEOUT = 30 * 60_000;
 
 export class App {
   save: SaveData = loadSave();
@@ -46,29 +51,107 @@ export class App {
   private coachState: 'none' | 'tap' | 'bomb' = 'none';
   private runStartedAt = 0;
   private tick = 0;
+  private activeSince = Date.now();
+  private backgroundAt = 0;
+  private musicBiome = -1;
 
   constructor() {
     const st = this.save.settings;
     setLang(st.lang);
     sfx.enabled = st.sound;
+    music.enabled = st.music;
     setVibration(st.vibration);
     this.renderer = new Renderer($<HTMLCanvasElement>('canvas'));
     this.applyQuality();
     this.ui = new Screens(this);
     this.staticIcons();
     this.bindInput();
-    track('app_open', { runs: this.save.runs, level: this.save.level });
+    this.beginSession();
+    startAnalytics();
+    listenPushOpens();
+    void clearPush();
 
-    if (!this.save.tutorialDone) {
-      // First launch goes straight into the scripted run: the fastest path to fun.
-      track('tutorial_start');
-      this.startRun();
+    if (!this.save.difficulty) {
+      // First launch: one quick choice, then straight into the scripted run.
+      this.startDemo();
+      this.ui.difficultyPicker(true);
+    } else if (!this.save.tutorialDone) {
+      this.startTutorial();
     } else {
       this.startDemo();
       this.ui.show('home');
       this.ui.autoPopups();
     }
     requestAnimationFrame((ts) => this.loop(ts));
+  }
+
+  startTutorial(): void {
+    track('tutorial_start', { difficulty: this.save.difficulty });
+    this.startRun();
+  }
+
+  // ───────────────────────── sessions & player analytics ─────────────────────────
+
+  private beginSession(): void {
+    const now = this.now();
+    const st = startSession(this.save, now);
+    setUserProps(userProperties(this.save, now), st.session);
+    track('session_start', { n: st.session, day: st.day, new_day: st.newActiveDay });
+    if (st.retention !== null) track(`retention_d${st.retention}`, { sessions: st.session });
+    this.activeSince = Date.now();
+    this.persist();
+  }
+
+  /** App went to the background: account time, flush analytics, schedule reminders. */
+  private onBackground(): void {
+    if (this.mode === 'play') this.pause();
+    const sec = (Date.now() - this.activeSince) / 1000;
+    addPlayTime(this.save, sec);
+    this.activeSince = Date.now();
+    this.backgroundAt = Date.now();
+    track('session_pause', { sec: Math.round(sec) });
+    this.persist();
+    flush();
+    music.stop();
+    void schedulePush(this.save, this.now()).then((n) => n && track('push_scheduled', { n }));
+  }
+
+  private onForeground(): void {
+    this.activeSince = Date.now();
+    if (this.backgroundAt && Date.now() - this.backgroundAt > SESSION_TIMEOUT) this.beginSession();
+    this.backgroundAt = 0;
+    void clearPush();
+    this.updateMusic(true);
+    if (this.mode === 'menu') this.ui.show(this.screen);
+  }
+
+  /** Seconds played since the app came to the foreground (not yet added to the profile). */
+  get liveSessionSec(): number {
+    return (Date.now() - this.activeSince) / 1000;
+  }
+
+  refreshUserProps(): void {
+    setUserProps(userProperties(this.save, this.now()), this.save.profile.sessions);
+  }
+
+  // ───────────────────────── music ─────────────────────────
+
+  private musicTheme(): ThemeId {
+    if (this.mode === 'menu' || this.mode === 'results' || this.bot) return 'menu';
+    return BIOME_THEMES[biomeIndex(Math.max(0, this.run.depth))];
+  }
+
+  /** Keep the soundtrack in sync with mode, biome, fever and overlays. */
+  updateMusic(force = false): void {
+    if (!sfx.context) return;
+    const theme = this.musicTheme();
+    const bi = this.mode === 'play' ? biomeIndex(Math.max(0, this.run.depth)) : -1;
+    if (force || bi !== this.musicBiome) {
+      this.musicBiome = bi;
+      music.play(theme);
+    }
+    music.setFever(this.mode === 'play' && this.run.fever);
+    music.duck(this.mode === 'paused' || this.mode === 'revive' || modalOpen());
   }
 
   // ───────────────────────── helpers ─────────────────────────
@@ -143,6 +226,7 @@ export class App {
     this.mode = 'play';
     this.acc = 0;
     this.runStartedAt = this.now();
+    this.musicBiome = -2;
     this.ui.clear();
     this.ui.nav(false);
     $('hud').classList.remove('hidden');
@@ -170,6 +254,7 @@ export class App {
       this.mode = 'revive';
       $('hud').classList.add('hidden');
       this.ui.reviveOffer(this.save.runs === 0);
+      if (this.save.runs > 0) this.save.profile.adsOffered++;
       track('ad_offer', { placement: 'revive' });
     } else {
       this.mode = 'dying';
@@ -181,6 +266,8 @@ export class App {
     closeModal();
     const ok = free || (await showRewardedAd(t('reviveAd')));
     if (ok && this.run.revive()) {
+      this.save.profile.revives++;
+      if (!free) this.save.profile.adsWatched++;
       track(free ? 'revive_free' : 'ad_watched', { placement: 'revive' });
       this.mode = 'play';
       $('hud').classList.remove('hidden');
@@ -202,6 +289,8 @@ export class App {
     this.result = r;
     const wasTutorial = !this.save.tutorialDone;
     this.report = applyResult(this.save, r, 1, this.now());
+    recordRun(this.save, r, this.now());
+    this.refreshUserProps();
     this.persist();
     $('hud').classList.add('hidden');
     this.setCoach('none');
@@ -224,7 +313,9 @@ export class App {
     const r = this.result;
     if (!r) return false;
     track('ad_offer', { placement: 'x2' });
+    this.save.profile.adsOffered++;
     if (!(await showRewardedAd(t('x2')))) return false;
+    this.save.profile.adsWatched++;
     addCoins(this.save, r.totalCoins);
     trackQuests(this.save, { coins: r.totalCoins }, this.now());
     this.persist();
@@ -278,6 +369,7 @@ export class App {
     this.renderer.draw(this.run);
     if (this.mode === 'play' || this.mode === 'dying') this.updateHud();
     if (this.mode === 'menu' && ++this.tick % 30 === 0) this.ui.refreshTimers();
+    if (this.tick % 10 === 0 || this.mode !== 'menu') this.updateMusic();
     this.adaptQuality(dt);
   }
 
@@ -503,6 +595,16 @@ export class App {
 
   private bindInput(): void {
     const canvas = $<HTMLCanvasElement>('canvas');
+    // Audio can only start after a user gesture (autoplay policy).
+    window.addEventListener(
+      'pointerdown',
+      () => {
+        const first = !sfx.context;
+        sfx.unlock();
+        if (first) this.updateMusic(true);
+      },
+      { capture: true },
+    );
     canvas.addEventListener('pointerdown', (ev) => {
       sfx.unlock();
       if (this.mode !== 'play') return;
@@ -526,16 +628,8 @@ export class App {
       else if (ev.key === 'Escape' || ev.key === 'p') this.pause();
     });
     window.addEventListener('resize', () => this.renderer.resize());
-    const background = () => {
-      if (this.mode === 'play') this.pause();
-      this.persist();
-    };
-    document.addEventListener('visibilitychange', () => document.hidden && background());
-    if (isNative) {
-      void CapApp.addListener('backButton', () => this.back());
-      void CapApp.addListener('pause', background);
-      void CapApp.addListener('resume', () => this.mode === 'menu' && this.ui.show(this.screen));
-    }
+    document.addEventListener('visibilitychange', () => (document.hidden ? this.onBackground() : this.onForeground()));
+    if (isNative) void CapApp.addListener('backButton', () => this.back());
   }
 
   /** Android back button / Escape. */
@@ -575,6 +669,8 @@ export class App {
   }
 
   quitRun(): void {
+    this.save.profile.quits++;
+    track('run_quit', { depth: this.run.depth });
     this.mode = 'dying';
     this.dyingTimer = 0;
     this.ui.clear();

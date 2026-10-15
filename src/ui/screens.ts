@@ -1,7 +1,10 @@
-import { track } from '../analytics';
+import { analyticsExport, analyticsLog, eventCounts, track } from '../analytics';
+
+const analyticsLogSize = () => analyticsLog().length;
+import { music } from '../audio/music';
 import { sfx } from '../audio/sfx';
 import { BLOCKS } from '../game/blocks';
-import { BIOMES, MAX_TIER, PRESTIGE, SHOP, TIERS, UPGRADES, type UpgradeId } from '../game/config';
+import { BIOMES, DIFFICULTY, MAX_TIER, PRESTIGE, SHOP, TIERS, UPGRADES, type Difficulty, type UpgradeId } from '../game/config';
 import {
   buyDynamite,
   buyForge,
@@ -47,16 +50,18 @@ import {
   type Feature,
   type Reward,
 } from '../game/meta';
+import { RETENTION_DAYS, playerMetrics } from '../game/profile';
 import { nextGoal, unlockedCheckpoints } from '../game/progress';
+import { pushPermission, requestPush } from '../notifications';
 import { Rng } from '../game/rng';
-import { setVibration, vibrate } from '../platform';
+import { isNative, setVibration, vibrate } from '../platform';
 import type { App } from './app';
 import { $, bar, closeModal, hms, modalOpen, msToMidnight, openModal, rewardTiles, toast } from './dom';
 import { fmt } from './format';
 import { setLang, t } from './i18n';
 import { UPGRADE_ICON, icon } from './icons';
 
-export type ScreenId = 'home' | 'upgrades' | 'forge' | 'quests' | 'collection' | 'shop' | 'settings';
+export type ScreenId = 'home' | 'upgrades' | 'forge' | 'quests' | 'collection' | 'shop' | 'settings' | 'profile';
 
 const NAV: { id: ScreenId; icon: string; label: string; feature: Feature }[] = [
   { id: 'upgrades', icon: 'hammer', label: 'upgrades', feature: 'upgrades' },
@@ -110,8 +115,8 @@ export class Screens {
     </div>`;
   }
 
-  private header(title: string): string {
-    return `<div class="topbar"><button class="icon-btn" data-a="back">${icon('back', 26)}</button><h2>${title}</h2>${this.wallet()}</div>`;
+  private header(title: string, wallet = true): string {
+    return `<div class="topbar"><button class="icon-btn" data-a="back">${icon('back', 26)}</button><h2>${title}</h2>${wallet ? this.wallet() : ''}</div>`;
   }
 
   private bindHeader(): void {
@@ -147,6 +152,9 @@ export class Screens {
         break;
       case 'settings':
         this.settings();
+        break;
+      case 'profile':
+        this.profile();
         break;
     }
     this.nav(true);
@@ -236,7 +244,7 @@ export class Screens {
     const xpNeed = xpForLevel(s.level);
     this.set(
       `<div class="topbar">
-        <div class="lvl"><div class="star">${icon('star', 44)}<b>${s.level}</b></div>${bar(s.xp / xpNeed, 'purple')}</div>
+        <button class="lvl" data-a="profile"><div class="star">${icon('star', 44)}<b>${s.level}</b></div>${bar(s.xp / xpNeed, 'purple')}</button>
         ${this.wallet()}
         <button class="icon-btn" data-a="settings">${icon('gear', 28)}</button>
       </div>
@@ -263,6 +271,10 @@ export class Screens {
     this.on('[data-a=settings]', () => {
       sfx.click();
       this.show('settings');
+    });
+    this.on('[data-a=profile]', () => {
+      sfx.click();
+      this.show('profile');
     });
     this.on('[data-d]', (el) => {
       s.startDepth = Number(el.dataset.d);
@@ -385,6 +397,18 @@ export class Screens {
       rep.levelsReached = [];
     }
     if (this.app.isUnlocked('daily') && dailyStatus(s, this.app.now()).canClaim) this.popupQueue.push(() => this.daily());
+    // Soft-ask for notifications once the player has seen the value (after a few runs), never on first launch.
+    if (isNative && !s.pushAsked && s.runs >= 2 && s.settings.notifications) {
+      void pushPermission().then((p) => {
+        if (p === 'prompt') {
+          this.popupQueue.push(() => this.pushAsk());
+          this.nextPopup();
+        } else if (!s.pushAsked) {
+          s.pushAsked = true;
+          this.app.persist();
+        }
+      });
+    }
     this.nextPopup();
   }
 
@@ -450,7 +474,9 @@ export class Screens {
     this.on('[data-up]', (el) => {
       const id = el.dataset.up as UpgradeId;
       const lvl = s.upgrades[id];
+      const before = s.coins;
       if (buyUpgrade(s, id)) {
+        s.profile.coinsSpent += before - s.coins;
         sfx.buy();
         vibrate('light');
         s.upgradeHintDone = true;
@@ -497,7 +523,9 @@ export class Screens {
     );
     this.bindHeader();
     this.on('[data-a=forge]', () => {
+      const before = s.coins;
       if (buyForge(s)) {
+        s.profile.coinsSpent += before - s.coins;
         sfx.tierUp();
         vibrate('heavy');
         this.app.notifyQuests(trackQuests(s, { upgrade: 1 }, this.app.now()));
@@ -687,8 +715,16 @@ export class Screens {
         this.nav(true);
       } else sfx.error();
     };
-    this.on('[data-a=dyn]', () => after(buyDynamite(s), 'purchase_item', { id: 'dynamite', cost: dc }));
-    this.on('[data-a=totem]', () => after(buyTotem(s), 'purchase_item', { id: 'totem', gems: SHOP.totemGems }));
+    this.on('[data-a=dyn]', () => {
+      const ok = buyDynamite(s);
+      if (ok) s.profile.coinsSpent += dc;
+      after(ok, 'purchase_item', { id: 'dynamite', cost: dc });
+    });
+    this.on('[data-a=totem]', () => {
+      const ok = buyTotem(s);
+      if (ok) s.profile.gemsSpent += SHOP.totemGems;
+      after(ok, 'purchase_item', { id: 'totem', gems: SHOP.totemGems });
+    });
     this.on('[data-a=chest]', () => {
       const res = openFreeChest(s, this.app.now(), new Rng((Math.random() * 1e9) | 0));
       if (!res) return sfx.error();
@@ -722,16 +758,19 @@ export class Screens {
     const onOff = (v: boolean) => (v ? t('on') : t('off'));
     const langLabel = st.lang === 'auto' ? t('auto') : st.lang.toUpperCase();
     this.set(
-      `${this.header(t('settings'))}
+      `${this.header(t('settings'), false)}
        <div class="panel" style="margin-top:14px">
+         <div class="settings-row"><span>${icon('star', 28)}${t('difficulty')}</span><button class="btn sm purple" data-a="diff">${t(`diff.${this.s.difficulty || 'normal'}`)}</button></div>
          <div class="settings-row"><span>${icon('sound', 28)}${t('sound')}</span><button class="btn sm ${st.sound ? '' : 'ghost'}" data-a="sound">${onOff(st.sound)}</button></div>
+         <div class="settings-row"><span>${icon('play', 28)}${t('music')}</span><button class="btn sm ${st.music ? '' : 'ghost'}" data-a="music">${onOff(st.music)}</button></div>
+         <div class="settings-row"><span>${icon('gift', 28)}${t('notifications')}${isNative ? '' : `<br><small class="sub">${t('pushUnsupported')}</small>`}</span><button class="btn sm ${st.notifications ? '' : 'ghost'}" data-a="push">${onOff(st.notifications)}</button></div>
          <div class="settings-row"><span>${icon('vibrate', 28)}${t('vibration')}</span><button class="btn sm ${st.vibration ? '' : 'ghost'}" data-a="vib">${onOff(st.vibration)}</button></div>
          <div class="settings-row"><span>${icon('shake', 28)}${t('shakeOpt')}</span><button class="btn sm ${st.shake ? '' : 'ghost'}" data-a="shake">${onOff(st.shake)}</button></div>
          <div class="settings-row"><span>${icon('sparkle', 28)}${t('particlesOpt')}</span><button class="btn sm blue" data-a="parts">${st.particles === 'high' ? t('high') : t('low')}</button></div>
          <div class="settings-row"><span>${icon('globe', 28)}${t('language')}</span><button class="btn sm blue" data-a="lang">${langLabel}</button></div>
        </div>
-       <p class="sub center" style="margin-top:18px">${t('level')} ${this.s.level} · ${t('blocks')}: ${fmt(this.s.blocksBroken)} · ${t('best')}: ${this.s.bestDepth} ${t('m')}</p>
-       <p class="sub center">Falling Pickaxe · ${t('version')} 0.2.0</p>`,
+       <button class="btn blue wide" data-a="profile" style="margin-top:16px">${icon('trophy', 26)}<span>${t('profile')}</span></button>
+       <p class="sub center" style="margin-top:14px">Falling Pickaxe · ${t('version')} 0.3.0</p>`,
       'solid',
     );
     this.bindHeader();
@@ -761,6 +800,27 @@ export class Screens {
       st.particles = st.particles === 'high' ? 'low' : 'high';
       sfx.click();
       save();
+    });
+    this.on('[data-a=music]', () => {
+      st.music = !st.music;
+      music.setEnabled(st.music, 'menu');
+      sfx.click();
+      save();
+    });
+    this.on('[data-a=push]', async () => {
+      st.notifications = !st.notifications;
+      sfx.click();
+      if (st.notifications && isNative && (await pushPermission()) === 'prompt') await requestPush();
+      track('push_toggle', { on: st.notifications });
+      save();
+    });
+    this.on('[data-a=diff]', () => {
+      sfx.click();
+      this.difficultyPicker(false);
+    });
+    this.on('[data-a=profile]', () => {
+      sfx.click();
+      this.show('profile');
     });
     this.on('[data-a=lang]', () => {
       st.lang = st.lang === 'auto' ? 'ru' : st.lang === 'ru' ? 'en' : 'auto';
@@ -1008,5 +1068,192 @@ export class Screens {
       },
       host,
     );
+  }
+
+  // ───────────────────────── difficulty ─────────────────────────
+
+  /** First launch (first=true) or from settings. */
+  difficultyPicker(first: boolean): void {
+    const cur = this.s.difficulty || 'normal';
+    const opts: Difficulty[] = ['easy', 'normal', 'hard'];
+    const colors: Record<Difficulty, string> = { easy: 'blue', normal: '', hard: 'red' };
+    const icons: Record<Difficulty, string> = { easy: 'heart', normal: 'pickaxe', hard: 'fire' };
+    const host = openModal(`<div class="modal panel">
+      <div class="ribbon">${t('diffTitle')}</div>
+      ${first ? '' : `<button class="icon-btn close" data-a="close">${icon('close', 22)}</button>`}
+      <div class="list" style="margin-top:12px;text-align:left">
+        ${opts
+          .map((d) => {
+            const k = DIFFICULTY[d];
+            const tags = [`${icon('heart', 16)} x${k.dur}`, `${icon('hammer', 16)} HP x${k.hp}`, `${icon('coin', 16)} x${k.coins}`].join(' · ');
+            return `<button class="card ${!first && d === cur ? 'done' : ''}" data-diff="${d}" style="text-align:left;width:100%">
+              <div class="ic">${icon(icons[d], 36)}</div>
+              <div class="info"><div class="nm">${t(`diff.${d}`)}${d === 'normal' ? `<span class="lv">${t('recommended')}</span>` : ''}</div>
+              <div class="ds">${t(`diffd.${d}`)}</div><div class="ds" style="margin-top:4px">${tags}</div></div>
+              <span class="btn sm ${colors[d]}" style="min-width:0;padding:0 10px">${icon('play', 18)}</span>
+            </button>`;
+          })
+          .join('')}
+      </div>
+      <p class="sub">${t('diffDesc')}</p>
+    </div>`);
+    this.on('[data-a=close]', () => closeModal(), host);
+    this.on(
+      '[data-diff]',
+      (el) => {
+        const d = el.dataset.diff as Difficulty;
+        const prev = this.s.difficulty;
+        this.s.difficulty = d;
+        track('difficulty_select', { value: d, prev: prev || 'none', first });
+        this.app.refreshUserProps();
+        this.app.persist();
+        sfx.buy();
+        closeModal();
+        if (first) this.app.startTutorial();
+        else this.rerender();
+      },
+      host,
+    );
+  }
+
+  private pushAsk(): void {
+    const s = this.s;
+    s.pushAsked = true;
+    this.app.persist();
+    track('push_soft_ask');
+    const host = openModal(`<div class="modal panel">
+      <div class="ribbon">${t('pushAskTitle')}</div>
+      <div style="margin-top:8px">${icon('chest', 72)}</div>
+      <p style="font-weight:700">${t('pushAskBody')}</p>
+      <div class="modal-actions">
+        <button class="btn lg wide" data-a="yes">${t('pushAskYes')}</button>
+        <button class="link" data-a="no">${t('pushAskNo')}</button>
+      </div></div>`);
+    this.on(
+      '[data-a=yes]',
+      async () => {
+        track('push_soft_yes');
+        await requestPush();
+        this.closeAndNext();
+      },
+      host,
+    );
+    this.on(
+      '[data-a=no]',
+      () => {
+        track('push_soft_no');
+        this.closeAndNext();
+      },
+      host,
+    );
+  }
+
+  // ───────────────────────── player profile ─────────────────────────
+
+  private profile(): void {
+    const s = this.s;
+    const now = this.app.now();
+    const live = this.app.liveSessionSec;
+    const m = playerMetrics(s, now, live);
+    const dur = (sec: number) => (sec >= 3600 ? `${(sec / 3600).toFixed(1)} ${t('h')}` : sec >= 60 ? `${Math.round(sec / 60)} ${t('min')}` : `${Math.round(sec)} ${t('s')}`);
+    const kpi = (label: string, value: string) => `<div class="kpi"><b>${value}</b><span>${label}</span></div>`;
+    const trend = m.depthTrend === null ? '—' : `${m.depthTrend > 0 ? '+' : ''}${m.depthTrend}%`;
+    const row = (label: string, value: string) => `<div><span>${label}</span><span class="v">${value}</span></div>`;
+    this.set(
+      `${this.header(t('profile'), false)}
+       <div class="panel" style="margin-top:14px">
+         <div class="sub" style="font-weight:800">${t('pHistory')}</div>
+         <div id="chartTip" class="center" style="min-height:22px;font-size:14px;font-weight:800">&nbsp;</div>
+         ${this.runChart()}
+       </div>
+       <div class="kpis" style="margin-top:12px">
+         ${kpi(t('pPlay'), dur(s.profile.playSec + live))}
+         ${kpi(t('pAvgSession'), dur(m.avgSessionMin * 60))}
+         ${kpi(t('pSessions'), String(m.sessions))}
+         ${kpi(t('pDays'), `${m.activeDays}`)}
+         ${kpi(t('pRuns'), String(m.runs))}
+         ${kpi(t('pAvgRun'), dur(m.avgRunSec))}
+         ${kpi(t('pAvgDepth'), `${Math.round(m.avgDepth)} ${t('m')}`)}
+         ${kpi(t('pMedianDepth'), `${Math.round(m.medianDepth)} ${t('m')}`)}
+         ${kpi(t('best'), `${m.bestDepth} ${t('m')}`)}
+         ${kpi(t('pTrend'), trend)}
+         ${kpi(t('pAvgCoins'), fmt(m.avgCoins))}
+         ${kpi(t('bestCombo'), String(s.life.maxCombo))}
+       </div>
+       <div class="panel rows" style="margin-top:12px">
+         ${row(t('pActive7'), `${m.activeLast7} / 7`)}
+         ${row(t('blocks'), fmt(s.blocksBroken))}
+         ${row(t('pRevives'), String(m.revives))}
+         ${row(t('pAds'), String(s.profile.adsWatched))}
+         ${row(t('pSpent'), `${icon('coin', 18)}${fmt(s.profile.coinsSpent)} · ${icon('gem', 18)}${s.profile.gemsSpent}`)}
+       </div>
+       <div class="panel rows" style="margin-top:12px">
+         <div class="sub" style="font-weight:800">${t('pDev')}</div>
+         ${row(t('pSegment'), t(`seg.${m.segment}`))}
+         ${row(t('pChurn'), t(`churn.${m.churnRisk}`))}
+         ${row(t('difficulty'), t(`diff.${s.difficulty || 'normal'}`))}
+         ${row(t('pId'), s.profile.id.slice(0, 13))}
+         <div class="sub">${t('pRetention')}</div>
+         <div class="chips" style="justify-content:flex-start">${RETENTION_DAYS.map((d) => `<span class="chip ${m.retained[d] ? 'on' : ''}">D${d}</span>`).join('')}</div>
+         <div class="sub">${t('pEvents')}: ${analyticsLogSize()}</div>
+         <div class="chips" style="justify-content:flex-start">${eventCounts()
+           .slice(0, 10)
+           .map(([n, c]) => `<span class="chip" style="font-size:11px">${n} · ${c}</span>`)
+           .join('')}</div>
+         <button class="btn ghost wide" data-a="export" style="margin-top:6px">${t('pExport')}</button>
+       </div>`,
+      'solid',
+    );
+    this.bindHeader();
+    const tip = document.getElementById('chartTip')!;
+    this.host.querySelectorAll<SVGRectElement>('[data-run]').forEach((el) => {
+      const show = () => {
+        const r = s.profile.history[Number(el.dataset.run)];
+        tip.innerHTML = `#${s.runs - (s.profile.history.length - 1 - Number(el.dataset.run))} · ${r.d} ${t('m')} · ${icon('coin', 16)} ${fmt(r.c)} · ${dur(r.t)}`;
+      };
+      el.addEventListener('pointerenter', show);
+      el.addEventListener('pointerdown', show);
+    });
+    this.on('[data-a=export]', async () => {
+      const data = JSON.stringify({ metrics: playerMetrics(s, this.app.now(), this.app.liveSessionSec), analytics: JSON.parse(analyticsExport()) });
+      try {
+        await navigator.clipboard.writeText(data);
+        toast(`${icon('check', 24)}${t('pCopied')}`);
+      } catch {
+        console.log(data);
+      }
+      track('analytics_export');
+    });
+  }
+
+  /** Bar chart of the last runs' depth: one series, one hue, record line, tap for details. */
+  private runChart(): string {
+    const h = this.s.profile.history.slice(-30);
+    if (!h.length) return `<p class="sub center">${t('pHistoryEmpty')}</p>`;
+    const W = 320;
+    const H = 130;
+    const top = 14;
+    const max = Math.max(this.s.bestDepth, ...h.map((r) => r.d), 10);
+    const gap = 2;
+    const bw = Math.min(22, Math.max(3, (W - gap * (h.length - 1)) / h.length));
+    const y = (d: number) => H - (d / max) * (H - top);
+    const bars = h
+      .map((r, i) => {
+        const x = i * (bw + gap);
+        const bh = Math.max(2, H - y(r.d));
+        const rr = Math.min(4, bw / 2);
+        const isBest = r.d === this.s.bestDepth;
+        const idx = this.s.profile.history.length - h.length + i;
+        return `<path d="M${x},${H} v${-(bh - rr)} q0,${-rr} ${rr},${-rr} h${bw - 2 * rr} q${rr},0 ${rr},${rr} v${bh - rr} z" fill="${isBest ? '#ffd23f' : '#6ff3f0'}"/>
+          <rect data-run="${idx}" x="${x - gap / 2}" y="0" width="${bw + gap}" height="${H}" fill="transparent"/>`;
+      })
+      .join('');
+    const ry = y(this.s.bestDepth);
+    return `<svg viewBox="0 0 ${W} ${H + 2}" width="100%" style="display:block;overflow:visible" role="img" aria-label="${t('pHistory')}">
+      <line x1="0" x2="${W}" y1="${H}" y2="${H}" stroke="#ffffff33" stroke-width="1"/>
+      <line x1="0" x2="${W}" y1="${ry}" y2="${ry}" stroke="#ffd23f99" stroke-width="1" stroke-dasharray="4 4"/>
+      <text x="${W}" y="${ry - 4}" text-anchor="end" fill="#b9a9dd" font-size="10" font-weight="700">${t('pRecord')} ${this.s.bestDepth} ${t('m')}</text>
+      ${bars}
+    </svg>`;
   }
 }

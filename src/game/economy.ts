@@ -1,4 +1,5 @@
 import {
+  DIFFICULTY,
   FORGE_COSTS,
   MAX_TIER,
   PRESTIGE,
@@ -111,6 +112,8 @@ export function addCoins(save: SaveData, n: number): void {
 /** Everything a run needs, derived from permanent progress. */
 export interface RunStats {
   maxDurBase: number;
+  /** Block HP multiplier from difficulty. */
+  hpMult: number;
   powerMult: number;
   coinMult: number;
   luckMult: number;
@@ -126,13 +129,15 @@ export interface RunStats {
 }
 
 export function deriveStats(save: SaveData): RunStats {
+  const diff = DIFFICULTY[save.difficulty || 'normal'];
   const u = save.upgrades;
   const shardCoin = 1 + save.shards * PRESTIGE.coinPerShard;
   const shardDmg = 1 + save.shards * PRESTIGE.dmgPerShard;
   return {
-    maxDurBase: RUN.baseDurability + RUN.durPerLevel * u.durability,
+    maxDurBase: Math.round((RUN.baseDurability + RUN.durPerLevel * u.durability) * diff.dur),
+    hpMult: diff.hp,
     powerMult: (1 + 0.15 * u.power) * shardDmg,
-    coinMult: (1 + 0.1 * u.fortune) * shardCoin,
+    coinMult: (1 + 0.1 * u.fortune) * shardCoin * diff.coins,
     luckMult: 1 + 0.05 * u.luck,
     critChance: 0.02 * u.crit,
     nudgeCharges: 2 + Math.floor(u.control / 2),

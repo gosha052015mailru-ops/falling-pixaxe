@@ -1,4 +1,5 @@
 import { UPGRADES, type UpgradeId } from './config';
+import { freshProfile, type Profile } from './profile';
 
 export const SAVE_VERSION = 2;
 const KEY = 'falling-pickaxe-save';
@@ -9,6 +10,8 @@ export interface Settings {
   lang: 'ru' | 'en' | 'auto';
   shake: boolean;
   particles: 'high' | 'low';
+  music: boolean;
+  notifications: boolean;
 }
 
 export interface LifetimeStats {
@@ -35,6 +38,8 @@ export interface QuestState {
   bonusClaimed: boolean;
   rerolled: boolean;
 }
+
+export type DifficultyChoice = 'easy' | 'normal' | 'hard' | '';
 
 export interface SaveData {
   version: number;
@@ -78,6 +83,11 @@ export interface SaveData {
   upgradeHintDone: boolean;
   /** Latest wall-clock time seen; guards timers against the device clock being moved back. */
   lastSeen: number;
+  /** '' = not chosen yet (asked on first launch). */
+  difficulty: DifficultyChoice;
+  profile: Profile;
+  /** The soft "may we remind you?" question was shown (never nag twice). */
+  pushAsked: boolean;
 }
 
 export function freshLife(): LifetimeStats {
@@ -112,7 +122,7 @@ export function newSave(): SaveData {
     runs: 0,
     blocksBroken: 0,
     discovered: [],
-    settings: { sound: true, vibration: true, lang: 'auto', shake: true, particles: 'high' },
+    settings: { sound: true, vibration: true, lang: 'auto', shake: true, particles: 'high', music: true, notifications: true },
     xp: 0,
     level: 1,
     life: freshLife(),
@@ -125,6 +135,9 @@ export function newSave(): SaveData {
     tutorialDone: false,
     upgradeHintDone: false,
     lastSeen: 0,
+    difficulty: '',
+    profile: freshProfile(),
+    pushAsked: false,
   };
 }
 
@@ -139,10 +152,13 @@ export function migrate(raw: unknown): SaveData {
   out.milestones = Array.isArray(r.milestones) ? r.milestones : [];
   out.discovered = Array.isArray(r.discovered) ? r.discovered : [];
   out.life = { ...base.life, ...(r.life ?? {}) };
+  out.profile = { ...base.profile, ...(r.profile ?? {}) };
   out.achievements = { ...(r.achievements ?? {}) };
   out.quests = r.quests && Array.isArray(r.quests.list) ? r.quests : base.quests;
   // v1 players already know how to play
   if (r.version === 1 && (r.runs ?? 0) > 0) out.tutorialDone = true;
+  // existing players keep the balance they were playing with
+  if (!r.difficulty && (r.runs ?? 0) > 0) out.difficulty = 'normal';
   for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen'] as const) {
     if (typeof out[k] !== 'number' || !Number.isFinite(out[k])) out[k] = base[k];
   }

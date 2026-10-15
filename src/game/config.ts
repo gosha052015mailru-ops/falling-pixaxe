@@ -123,6 +123,18 @@ export const SHOP = {
   totemGems: 10,
 };
 
+export type Difficulty = 'easy' | 'normal' | 'hard';
+
+/**
+ * Difficulty presets. Hard pays more coins so it is a real choice, not a trap.
+ * dur = durability multiplier, hp = block HP multiplier, coins = coin multiplier.
+ */
+export const DIFFICULTY: Record<Difficulty, { dur: number; hp: number; coins: number }> = {
+  easy: { dur: 1.25, hp: 0.9, coins: 0.9 },
+  normal: { dur: 1, hp: 1, coins: 1 },
+  hard: { dur: 0.8, hp: 1.3, coins: 1.6 },
+};
+
 export const PRESTIGE = {
   unlockDepth: 450,
   divisor: 5000,

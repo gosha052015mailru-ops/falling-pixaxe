@@ -1,7 +1,7 @@
 /**
  * Headless balance simulation: a greedy bot plays the real Run simulation,
  * applies results and buys upgrades between runs.
- *   npm run sim -- [maxRuns] [seed]
+ *   npm run sim -- [maxRuns] [seed] [--diff=easy|normal|hard]
  */
 import { BIOMES, CAMPAIGN_DEPTH, PRESTIGE, type UpgradeId } from '../src/game/config';
 import { buyDynamite, buyForge, buyUpgrade, canPrestige, deriveStats, doPrestige, dynamiteCost, forgeCost, upgradeCost, upgradeDef } from '../src/game/economy';
@@ -16,6 +16,8 @@ const BUY: UpgradeId[] = ['durability', 'power', 'fortune', 'luck', 'crit', 'wei
 const WEIGHT: Record<UpgradeId, number> = { durability: 1, power: 1, fortune: 1.2, luck: 1.6, crit: 1.8, weight: 2, control: 3, blast: 3 };
 
 const save = newSave();
+const diffArg = process.argv.find((a) => a.startsWith('--diff='));
+save.difficulty = (diffArg?.slice(7) as typeof save.difficulty) || 'normal';
 const reached = new Map<number, { run: number; minutes: number }>();
 let minutes = 0;
 let lastLog = 0;

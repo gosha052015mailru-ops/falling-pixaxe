@@ -25,6 +25,7 @@
     "@capacitor/app": "^7.1.2",
     "@capacitor/core": "^7.6.9",
     "@capacitor/haptics": "^7.0.5",
+    "@capacitor/local-notifications": "^7.0.7",
     "@fontsource/rubik": "^5.3.0"
   }
 }

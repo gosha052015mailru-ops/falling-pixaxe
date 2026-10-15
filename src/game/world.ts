@@ -12,10 +12,10 @@ import {
 import { Rng, valueNoise } from './rng';
 
 /** Effective HP of a block at a depth. Special blocks are never scaled. */
-export function blockHp(id: B, y: number): number {
+export function blockHp(id: B, y: number, mult = 1): number {
   const def = blockDef(id);
   if (def.special || !Number.isFinite(def.hp)) return def.hp;
-  return def.hp * Math.pow(1 + Math.max(0, y) / RUN.hpDepthDiv, RUN.hpDepthPow);
+  return mult * def.hp * Math.pow(1 + Math.max(0, y) / RUN.hpDepthDiv, RUN.hpDepthPow);
 }
 
 const SPECIAL_KEYS = Object.keys(SPECIAL_BASE) as SpecialSpawn[];
@@ -36,6 +36,7 @@ export class World {
     readonly startDepth = 0,
     readonly luckMult = 1,
     readonly endDepth = CAMPAIGN_DEPTH,
+    readonly hpMult = 1,
   ) {
     this.rng = new Rng(seed ^ 0x9e3779b9);
     this.generatedTo = startDepth - 1;
@@ -69,7 +70,7 @@ export class World {
   set(x: number, y: number, id: B): void {
     if (this.isWall(x) || y < this.startDepth) return;
     this.row(y)[x] = id;
-    this.hp.get(y)![x] = blockHp(id, y);
+    this.hp.get(y)![x] = blockHp(id, y, this.hpMult);
   }
 
   /** Drop rows far above the camera to cap memory in long runs. */
@@ -158,7 +159,7 @@ export class World {
           }
         }
         row[x] = id;
-        hp[x] = blockHp(id, y);
+        hp[x] = blockHp(id, y, this.hpMult);
       }
     }
     this.rows.set(y, row);

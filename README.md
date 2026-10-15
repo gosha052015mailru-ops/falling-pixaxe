@@ -13,7 +13,7 @@
 npm install
 npm run dev        # http://localhost:5173 — открыть с телефона в той же сети или в мобильном режиме DevTools
 npm test           # unit-тесты ядра
-npm run sim        # headless-симуляция баланса: npm run sim -- 600 42
+npm run sim        # симуляция баланса: npm run sim -- 600 42 --diff=hard
 npm run build      # сборка в dist/
 ```
 
@@ -31,12 +31,28 @@ npm run build      # сборка в dist/
 | `src/audio/` | Синтез звуков WebAudio (без аудио-файлов) |
 | `src/game/meta.ts` | Удержание: уровень, ежедневки, задания, достижения, сундуки, шахтёры, коллекция |
 | `src/ui/` | `app.ts` — цикл и забег, `screens.ts` — экраны и модалки, `icons.ts` — SVG-иконки, i18n RU/EN |
-| `src/analytics.ts` | Фасад аналитики (`track()`), сюда подключается Firebase/AppMetrica |
+| `src/game/profile.ts` | Аналитика по игроку: сессии, удержание, история забегов, сегмент, риск ухода |
+| `src/analytics.ts` | Фасад аналитики: свойства игрока, журнал, пакетная отправка на сервер |
+| `src/audio/music.ts` | Процедурная музыка (темы биомов, лихорадка) |
+| `src/notifications.ts` | Локальные push-уведомления (планировщик, тихие часы) |
 | `scripts/balance-sim.ts` | Симуляция прогрессии жадным ботом |
 | `android/` | Нативный Android-проект (Capacitor) |
 
 Весь баланс — в `src/game/config.ts` (+ HP/ценность блоков в `src/game/blocks.ts`).
 После правок прогоняйте `npm run sim` и сверяйтесь с целями из раздела 5.6 дизайн-документа.
+
+## Аналитика
+
+* В игре: **Профиль** (тап по уровню на главной) — статистика игрока, график забегов, сегмент,
+  удержание D1–D30, журнал событий и экспорт JSON.
+* Отправка на свой сервер: соберите с переменной `VITE_ANALYTICS_URL=https://… npm run build` —
+  события уходят пакетами (`POST {user, events}`) каждые 30 с и при сворачивании.
+* Firebase / AppMetrica / GameAnalytics: вызовите `setAnalyticsSink((event, user) => …)` в `src/main.ts`.
+
+## Уведомления
+
+Работают в Android-приложении (`@capacitor/local-notifications`). В браузере не показываются.
+Разрешение запрашивается после 2-го забега через мягкий вопрос в игре.
 
 ## Сборка под Android
 
