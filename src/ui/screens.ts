@@ -53,7 +53,7 @@ import {
   type Reward,
 } from '../game/meta';
 import { RETENTION_DAYS, playerMetrics } from '../game/profile';
-import { nextGoal, unlockedCheckpoints } from '../game/progress';
+import { buyLiftStop, nextGoal, nextLiftStop, unlockedCheckpoints } from '../game/progress';
 import { dayKey } from '../game/time';
 import { pushPermission, requestPush } from '../notifications';
 import { Rng } from '../game/rng';
@@ -85,6 +85,8 @@ export class Screens {
   private confirmPrestige = false;
   private popupQueue: (() => void)[] = [];
   private dailyShownOn = '';
+  /** Depth of the elevator stop waiting for a confirming second tap (0 = none). */
+  private confirmLift = 0;
   private confirmReset = false;
 
   constructor(private app: App) {}
@@ -141,6 +143,7 @@ export class Screens {
     this.app.screen = id;
     this.confirmPrestige = false;
     this.confirmReset = false;
+    this.confirmLift = 0;
     track('screen_view', { id });
     switch (id) {
       case 'home':
@@ -188,7 +191,8 @@ export class Screens {
           const m = megaCost(s, id);
           return m !== null && s.coins >= m;
         }).length;
-        return (c !== null && s.coins >= c ? 1 : 0) + megas;
+        const lift = nextLiftStop(s);
+        return (c !== null && s.coins >= c ? 1 : 0) + megas + (lift && s.coins >= lift.cost ? 1 : 0);
       }
       case 'quests':
         ensureQuests(s, now);
@@ -251,11 +255,18 @@ export class Screens {
           goal.biome > 0 ? t('goalBiome', { biome: t(`biome.${BIOMES[goal.biome].key}`) }) : t('goalCore')
         }</span><span>${s.bestDepth} / ${goal.depth} ${t('m')}</span></div>${bar(s.bestDepth / goal.depth, 'cyan')}</div>`
       : `<div class="panel goal center">${t('goalDone')}</div>`;
+    const stop = nextLiftStop(s);
     const lift =
-      cps.length > 1
-        ? `<div class="chips"><span class="label">${t('lift')}:</span>${cps
+      cps.length > 1 || stop
+        ? `<div class="chips"><span class="label">${icon('down', 18)} ${t('lift')}:</span>${cps
             .map((d) => `<button class="chip ${d === s.startDepth ? 'on' : ''}" data-d="${d}">${d} ${t('m')}</button>`)
-            .join('')}</div>`
+            .join('')}${
+            stop
+              ? `<button class="chip buy ${s.coins >= stop.cost ? 'ok' : ''}" data-lift="${stop.depth}">${icon('lock', 16)} ${
+                  this.confirmLift === stop.depth ? t('liftConfirm') : `${stop.depth} ${t('m')}`
+                } · ${icon('coin', 16)}${fmt(stop.cost)}</button>`
+              : ''
+          }</div>`
         : '';
     const xpNeed = xpForLevel(s.level);
     this.set(
@@ -294,10 +305,12 @@ export class Screens {
     });
     this.on('[data-d]', (el) => {
       s.startDepth = Number(el.dataset.d);
+      this.confirmLift = 0;
       sfx.click();
       this.app.persist();
       this.home();
     });
+    this.on('[data-lift]', (el) => this.tryBuyLift(Number(el.dataset.lift), () => this.home()));
     this.lastSideKey = this.sideKey();
     this.bindSide();
   }
@@ -549,11 +562,12 @@ export class Screens {
        </div>
        <h2 style="font-size:22px;margin:18px 0 4px">${t('mega')}</h2>
        <p class="sub" style="margin:0 0 10px">${t('megaDesc')}</p>
-       <div class="list">${(['size', 'width'] as MegaId[]).map((id) => this.megaCard(id)).join('')}</div>
+       <div class="list">${(['size', 'width'] as MegaId[]).map((id) => this.megaCard(id)).join('')}${this.liftCard()}</div>
        <div class="list" style="margin-top:14px">${tiers}</div>`,
       'solid',
     );
     this.bindHeader();
+    this.on('[data-wlift]', (el) => this.tryBuyLift(Number(el.dataset.wlift), () => this.forge()));
     this.on('[data-mega]', (el) => {
       const id = el.dataset.mega as MegaId;
       const before = s.coins;
@@ -582,6 +596,47 @@ export class Screens {
         this.nav(true);
       } else sfx.error();
     });
+  }
+
+  /** Two-tap purchase of an elevator stop: first tap asks, second buys. */
+  private tryBuyLift(depth: number, rerender: () => void): void {
+    const s = this.s;
+    if (this.confirmLift !== depth) {
+      this.confirmLift = depth;
+      sfx.click();
+      rerender();
+      return;
+    }
+    this.confirmLift = 0;
+    const before = s.coins;
+    if (buyLiftStop(s, depth)) {
+      s.profile.coinsSpent += before - s.coins;
+      s.startDepth = depth;
+      sfx.tierUp();
+      vibrate('heavy');
+      track('purchase_lift', { depth, cost: before - s.coins });
+      this.app.persist();
+      toast(`${icon('down', 26)}<span>${t('liftBought', { d: depth })}</span>`);
+      this.nav(true);
+    } else sfx.error();
+    rerender();
+  }
+
+  private liftCard(): string {
+    const s = this.s;
+    const stop = nextLiftStop(s);
+    const owned = s.liftStops.length;
+    const desc = stop ? t('liftDesc', { d: stop.depth }) : s.bestDepth < 20 ? t('liftNone') : t('liftAll');
+    const afford = stop !== null && s.coins >= stop.cost;
+    return `<div class="card"><div class="ic">${icon('down', 40)}</div>
+      <div class="info"><div class="nm">${t('lift')}<span class="lv">${owned}/5</span></div><div class="ds">${desc}</div></div>
+      ${
+        stop
+          ? `<button class="btn sm ${afford ? 'gold' : 'off'}" data-wlift="${stop.depth}">${
+              this.confirmLift === stop.depth ? t('liftConfirm') : `${icon('coin', 22)}<span class="${afford ? '' : 'price-bad'}">${fmt(stop.cost)}</span>`
+            }</button>`
+          : ''
+      }</div>`;
   }
 
   private megaCard(id: MegaId): string {

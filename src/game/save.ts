@@ -91,6 +91,8 @@ export interface SaveData {
   /** Mega upgrades (levels). */
   pickSize: number;
   shaftWidth: number;
+  /** Bought elevator stops (depths). */
+  liftStops: number[];
   /** The soft "may we remind you?" question was shown (never nag twice). */
   pushAsked: boolean;
 }
@@ -144,6 +146,7 @@ export function newSave(): SaveData {
     profile: freshProfile(),
     pickSize: 0,
     shaftWidth: 0,
+    liftStops: [],
     pushAsked: false,
   };
 }
@@ -160,6 +163,8 @@ export function migrate(raw: unknown): SaveData {
   out.discovered = Array.isArray(r.discovered) ? r.discovered : [];
   out.life = { ...base.life, ...(r.life ?? {}) };
   out.profile = { ...base.profile, ...(r.profile ?? {}) };
+  // the elevator used to be free: keep every stop an existing player could already use
+  if (!Array.isArray(r.liftStops)) out.liftStops = [20, 100, 250, 450, 700].filter((d) => (r.bestDepth ?? 0) >= d);
   out.achievements = { ...(r.achievements ?? {}) };
   out.quests = r.quests && Array.isArray(r.quests.list) ? r.quests : base.quests;
   // v1 players already know how to play

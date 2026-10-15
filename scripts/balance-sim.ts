@@ -6,7 +6,7 @@
 import { BIOMES, CAMPAIGN_DEPTH, PRESTIGE, type UpgradeId } from '../src/game/config';
 import { buyDynamite, buyForge, buyMega, megaCost, buyUpgrade, canPrestige, deriveStats, doPrestige, dynamiteCost, forgeCost, upgradeCost, upgradeDef } from '../src/game/economy';
 import { Bot } from '../src/game/bot';
-import { applyResult, unlockedCheckpoints } from '../src/game/progress';
+import { applyResult, buyLiftStop, nextLiftStop, unlockedCheckpoints } from '../src/game/progress';
 import { Run } from '../src/game/run';
 import { newSave } from '../src/game/save';
 
@@ -41,6 +41,11 @@ for (let i = 1; i <= maxRuns; i++) {
   for (let b = 1; b < BIOMES.length; b++) if (r.depth >= BIOMES[b].from && !reached.has(b)) reached.set(b, { run: i, minutes });
   if (r.core && !reached.has(99)) reached.set(99, { run: i, minutes });
 
+  // elevator stops: buy as soon as affordable (they save a lot of time)
+  for (let stop = nextLiftStop(save); stop && save.coins >= stop.cost; stop = nextLiftStop(save)) {
+    buyLiftStop(save, stop.depth);
+    console.log(`  ⇩ lift ${stop.depth}m at ~${minutes.toFixed(0)} min (cost ${stop.cost})`);
+  }
   // mega upgrades first: they are the big goals players save for
   for (const id of ['size', 'width'] as const) {
     const c = megaCost(save, id);

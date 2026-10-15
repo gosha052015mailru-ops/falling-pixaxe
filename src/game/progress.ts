@@ -1,4 +1,4 @@
-import { BIOMES, CHECKPOINTS } from './config';
+import { BIOMES, CHECKPOINTS, LIFT_COSTS } from './config';
 import { addCoins } from './economy';
 import { addXp, discoveryGems, runXp, trackQuests } from './meta';
 import type { RunResult } from './run';
@@ -69,9 +69,24 @@ export function applyResult(save: SaveData, r: RunResult, mult = 1, now = Date.n
   return { xp, levelsReached, newBlocks, newBlockGems, questsDone, prevBest };
 }
 
-/** Elevator stops the player has unlocked (always includes 0). */
+/** Elevator stops the player can start from: reached AND bought (always includes 0). */
 export function unlockedCheckpoints(save: SaveData): number[] {
-  return [0, ...CHECKPOINTS.filter((d) => save.bestDepth >= d)];
+  return [0, ...CHECKPOINTS.filter((d) => save.bestDepth >= d && save.liftStops.includes(d))];
+}
+
+/** The next stop that is reached but not bought yet, with its price. */
+export function nextLiftStop(save: SaveData): { depth: number; cost: number } | null {
+  const d = CHECKPOINTS.find((c) => save.bestDepth >= c && !save.liftStops.includes(c));
+  return d === undefined ? null : { depth: d, cost: LIFT_COSTS[d] };
+}
+
+export function buyLiftStop(save: SaveData, depth: number): boolean {
+  const cost = LIFT_COSTS[depth];
+  if (cost === undefined || save.bestDepth < depth || save.liftStops.includes(depth) || save.coins < cost) return false;
+  save.coins -= cost;
+  save.liftStops.push(depth);
+  save.liftStops.sort((a, b) => a - b);
+  return true;
 }
 
 export function biomeIndexOfCheckpoint(depth: number): number {

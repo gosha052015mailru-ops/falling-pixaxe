@@ -168,3 +168,24 @@ describe('mega upgrades & fast-forward', () => {
     ]);
   });
 });
+
+describe('elevator', () => {
+  it('stops must be reached and then bought', async () => {
+    const { buyLiftStop, nextLiftStop, unlockedCheckpoints } = await import('../src/game/progress');
+    const s = newSave();
+    s.bestDepth = 120;
+    expect(unlockedCheckpoints(s)).toEqual([0]);
+    expect(nextLiftStop(s)?.depth).toBe(20);
+    expect(buyLiftStop(s, 20)).toBe(false); // no coins
+    s.coins = 1e6;
+    expect(buyLiftStop(s, 250)).toBe(false); // not reached
+    expect(buyLiftStop(s, 20)).toBe(true);
+    expect(buyLiftStop(s, 100)).toBe(true);
+    expect(unlockedCheckpoints(s)).toEqual([0, 20, 100]);
+    expect(nextLiftStop(s)).toBeNull();
+  });
+  it('existing players keep the stops they could already use', () => {
+    expect(migrate({ runs: 50, bestDepth: 300 }).liftStops).toEqual([20, 100, 250]);
+    expect(migrate({ runs: 50, bestDepth: 300, liftStops: [20] }).liftStops).toEqual([20]);
+  });
+});

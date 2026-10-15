@@ -266,6 +266,12 @@ export const BIOMES: BiomeDef[] = [
 
 /** Biome boundaries that act as elevator checkpoints. */
 export const CHECKPOINTS = BIOMES.slice(1).map((b) => b.from);
+
+/**
+ * Elevator stops are bought (after the depth is reached). Prices follow the coin curve:
+ * roughly 3–5 runs of income at the stage where the stop becomes reachable.
+ */
+export const LIFT_COSTS: Record<number, number> = { 20: 300, 100: 6000, 250: 60000, 450: 300000, 700: 1500000 };
 export const CORE_REWARD = { coins: 500000, gems: 50 };
 
 export function biomeAt(depth: number): BiomeDef {

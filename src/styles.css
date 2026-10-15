@@ -1677,3 +1677,17 @@ h2 {
   width: 28px;
   height: 28px;
 }
+
+/* elevator stop that can be bought */
+.chip.buy {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: linear-gradient(#5a4788, #3c2d62);
+  color: #fff;
+}
+.chip.buy.ok {
+  background: linear-gradient(#ffe878, #ffb31a);
+  color: var(--ink);
+  animation: pulse 1.4s ease-in-out infinite;
+}
