@@ -10,7 +10,7 @@ import { trackQuests, unlocked } from '../game/meta';
 import { addPlayTime, recordRun, startSession, userProperties } from '../game/profile';
 import { applyResult, type ProgressReport } from '../game/progress';
 import { Run, type GameEvent, type RunResult } from '../game/run';
-import { clockNow, loadSave, writeSave, type SaveData } from '../game/save';
+import { clockNow, loadSave, wipeStorage, writeSave, type SaveData } from '../game/save';
 import { clearPush, listenPushOpens, schedulePush } from '../notifications';
 import { isNative, setVibration, showRewardedAd, vibrate } from '../platform';
 import { Renderer } from '../render/renderer';
@@ -114,7 +114,7 @@ export class App {
     this.backgroundAt = Date.now();
     track('session_pause', { sec: Math.round(sec) });
     this.persist();
-    flush();
+    if (!this.resetting) flush();
     music.stop();
     void schedulePush(this.save, this.now()).then((n) => n && track('push_scheduled', { n }));
   }
@@ -163,9 +163,40 @@ export class App {
     return clockNow(this.save);
   }
 
+  /** Set while wiping progress: nothing may be written back (reload fires "background" → save). */
+  private resetting = false;
+
   persist(): void {
+    if (this.resetting) return;
     this.now();
     writeSave(this.save);
+  }
+
+  /**
+   * Tester shortcut (console: game.cheat({...})). Edits the live save — editing localStorage
+   * directly does not work because the game writes its in-memory state back on reload.
+   */
+  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number } = {}): void {
+    const s = this.save;
+    s.coins += o.coins ?? 1e6;
+    s.gems += o.gems ?? 100;
+    if (o.level) s.level = o.level;
+    if (o.depth !== undefined) s.bestDepth = Math.max(s.bestDepth, o.depth);
+    if (o.forge !== undefined) s.forgeTier = Math.max(0, Math.min(TIERS.length - 1, o.forge));
+    if (!s.difficulty) s.difficulty = 'normal';
+    s.tutorialDone = true;
+    closeModal();
+    this.persist();
+    this.ui.show('home');
+  }
+
+  /** Start over from scratch: wipe storage and reload without saving anything back. */
+  resetProgress(): void {
+    track('progress_reset', { runs: this.save.runs, level: this.save.level });
+    this.resetting = true;
+    music.stop();
+    wipeStorage();
+    location.reload();
   }
 
   applyQuality(): void {

@@ -191,6 +191,20 @@ export function writeSave(save: SaveData, storage: Pick<Storage, 'setItem' | 'ge
   }
 }
 
+/** Every key the game stores (save, backup, analytics journal). */
+export const STORAGE_KEYS = [KEY, BACKUP, 'falling-pickaxe-analytics'];
+
+/** Wipes all progress. The caller must stop saving afterwards (see App.resetProgress). */
+export function wipeStorage(storage: Pick<Storage, 'removeItem'> | undefined = globalThis.localStorage): void {
+  for (const k of STORAGE_KEYS) {
+    try {
+      storage?.removeItem(k);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /** Monotonic "now" for timers: never earlier than the latest time this save has seen. */
 export function clockNow(save: SaveData, wall = Date.now()): number {
   if (wall > save.lastSeen) save.lastSeen = wall;

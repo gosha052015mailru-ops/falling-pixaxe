@@ -83,6 +83,7 @@ export class Screens {
   private confirmPrestige = false;
   private popupQueue: (() => void)[] = [];
   private dailyShownOn = '';
+  private confirmReset = false;
 
   constructor(private app: App) {}
 
@@ -137,6 +138,7 @@ export class Screens {
     this.app.goMenu();
     this.app.screen = id;
     this.confirmPrestige = false;
+    this.confirmReset = false;
     track('screen_view', { id });
     switch (id) {
       case 'home':
@@ -790,6 +792,7 @@ export class Screens {
          <div class="settings-row"><span>${icon('globe', 28)}${t('language')}</span><button class="btn sm blue" data-a="lang">${langLabel}</button></div>
        </div>
        <button class="btn blue wide" data-a="profile" style="margin-top:16px">${icon('trophy', 26)}<span>${t('profile')}</span></button>
+       <button class="btn red wide" data-a="reset" style="margin-top:14px">${this.confirmReset ? t('resetConfirm') : t('reset')}</button>
        <p class="sub center" style="margin-top:14px">Falling Pickaxe · ${t('version')} 0.3.0</p>`,
       'solid',
     );
@@ -833,6 +836,15 @@ export class Screens {
       if (st.notifications && isNative && (await pushPermission()) === 'prompt') await requestPush();
       track('push_toggle', { on: st.notifications });
       save();
+    });
+    this.on('[data-a=reset]', () => {
+      if (!this.confirmReset) {
+        this.confirmReset = true;
+        sfx.click();
+        this.settings();
+        return;
+      }
+      this.app.resetProgress();
     });
     this.on('[data-a=diff]', () => {
       sfx.click();
