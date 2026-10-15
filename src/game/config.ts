@@ -153,6 +153,25 @@ export const FAST_FORWARD: [number, number][] = [
   [50, 4],
 ];
 
+/**
+ * Mine events: a meter fills with every broken block; when full, a random event fires.
+ * The goal is about half of the blocks the player usually breaks in a run (±25 % each time),
+ * so a run sees 1–2 events. Unlocked after ~10 min of play.
+ */
+export type MineEventId = 'goldrush' | 'superpick' | 'oreVein' | 'tntRain' | 'repair' | 'treasure';
+export const MINE_EVENTS = {
+  unlockSec: 600,
+  goalShare: 0.55,
+  goalMin: 15,
+  goalMax: 400,
+  weights: { goldrush: 3, superpick: 3, oreVein: 3, tntRain: 2, repair: 2, treasure: 2 } as Record<MineEventId, number>,
+  goldTime: 8,
+  goldCoins: 2,
+  superTime: 6,
+  superDamage: 3,
+  repairShare: 0.4,
+};
+
 export type Difficulty = 'easy' | 'normal' | 'hard';
 
 /**

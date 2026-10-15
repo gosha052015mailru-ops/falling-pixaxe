@@ -189,3 +189,25 @@ describe('elevator', () => {
     expect(migrate({ runs: 50, bestDepth: 300, liftStops: [20] }).liftStops).toEqual([20]);
   });
 });
+
+describe('mine events', () => {
+  it('fire when the block meter fills, then a new random goal is rolled', () => {
+    const s = newSave();
+    const run = new Run({ seed: 4, stats: deriveStats(s), bestDepth: 0, milestones: [], eventGoal: 5 });
+    expect(run.eventGoal).toBeGreaterThanOrEqual(15); // never below the minimum
+    run.eventGoal = 3;
+    for (let x = 0; x < 9; x++) run.world.set(x, 30, B.DIRT);
+    run.y = -20;
+    (run as unknown as { explode: (x: number, y: number, r: number, c: number) => void }).explode(4.5, 30.5, 3, 0);
+    expect(run.events.some((e) => e.t === 'event')).toBe(true);
+    expect(run.eventsFired).toBeGreaterThan(0);
+  });
+  it('unlock after ~10 minutes of play and scale with the player', async () => {
+    const { eventGoalFor } = await import('../src/game/profile');
+    const s = newSave();
+    expect(eventGoalFor(s)).toBe(0);
+    s.profile.playSec = 601;
+    s.profile.history = [{ d: 30, c: 0, t: 20, at: 0, b: 100 }];
+    expect(eventGoalFor(s)).toBe(55);
+  });
+});

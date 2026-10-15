@@ -7,7 +7,7 @@ import { Bot } from '../game/bot';
 import { BIOMES, FAST_FORWARD, TIERS, biomeIndex } from '../game/config';
 import { addCoins, deriveStats } from '../game/economy';
 import { trackQuests, unlocked } from '../game/meta';
-import { addPlayTime, recordRun, startSession, userProperties } from '../game/profile';
+import { addPlayTime, eventGoalFor, recordRun, startSession, userProperties } from '../game/profile';
 import { applyResult, type ProgressReport } from '../game/progress';
 import { Run, type GameEvent, type RunResult } from '../game/run';
 import { clockNow, loadSave, wipeStorage, writeSave, type SaveData } from '../game/save';
@@ -53,7 +53,8 @@ export class App {
   private ffUnlocked = 0;
   private hud = { dur: -1, max: -1, depth: -1, coins: -1, gems: -1, nudges: -1, bombs: -1, combo: -1, fever: false, buffs: '' };
   private frameTimes: number[] = [];
-  private coachState: 'none' | 'tap' | 'bomb' | 'nudges' = 'none';
+  private coachState: 'none' | 'tap' | 'bomb' | 'nudges' | 'events' = 'none';
+  private evKey = '';
   /** Run time at which the nudge-panel hint should appear (0 = not planned this run). */
   private nudgeHintAt = 0;
   private runStartedAt = 0;
@@ -183,7 +184,7 @@ export class App {
    * Tester shortcut (console: game.cheat({...})). Edits the live save — editing localStorage
    * directly does not work because the game writes its in-memory state back on reload.
    */
-  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number; size?: number; width?: number } = {}): void {
+  cheat(o: { coins?: number; gems?: number; level?: number; depth?: number; forge?: number; size?: number; width?: number; playMin?: number } = {}): void {
     const s = this.save;
     s.coins += o.coins ?? 1e6;
     s.gems += o.gems ?? 100;
@@ -192,6 +193,7 @@ export class App {
     if (o.forge !== undefined) s.forgeTier = Math.max(0, Math.min(TIERS.length - 1, o.forge));
     if (o.size !== undefined) s.pickSize = Math.max(0, Math.min(5, o.size));
     if (o.width !== undefined) s.shaftWidth = Math.max(0, Math.min(5, o.width));
+    if (o.playMin !== undefined) s.profile.playSec = Math.max(s.profile.playSec, o.playMin * 60);
     if (!s.difficulty) s.difficulty = 'normal';
     s.tutorialDone = true;
     closeModal();
@@ -263,7 +265,12 @@ export class App {
     sfx.unlock();
     const tutorial = !this.save.tutorialDone;
     const stats = deriveStats(this.save);
-    this.run = new Run({ seed: (Math.random() * 1e9) | 0, stats, bestDepth: this.save.bestDepth, milestones: this.save.milestones, tutorial });
+    const eventGoal = tutorial ? 0 : eventGoalFor(this.save, this.liveSessionSec);
+    this.run = new Run({ seed: (Math.random() * 1e9) | 0, stats, bestDepth: this.save.bestDepth, milestones: this.save.milestones, tutorial, eventGoal });
+    this.evKey = '';
+    if (eventGoal && !this.save.hintEventsDone) {
+      track('feature_unlock', { feature: 'mine_events', play_min: Math.round(this.save.profile.playSec / 60) });
+    }
     this.bot = null;
     this.renderer.reset(this.run);
     this.mode = 'play';
@@ -285,9 +292,16 @@ export class App {
     track('run_start', { n: this.save.runs + 1, start: stats.startDepth, tier: stats.startTier, tutorial });
   }
 
-  private setCoach(state: 'none' | 'tap' | 'bomb' | 'nudges'): void {
+  private setCoach(state: 'none' | 'tap' | 'bomb' | 'nudges' | 'events'): void {
     this.coachState = state;
     const host = $('coach');
+    $('evBar').classList.toggle('spot', state === 'events');
+    if (state === 'events') {
+      host.innerHTML = `<div class="coach event-hint"><span class="arrow">${icon('down', 30)}</span><div class="bubble">${t('hintEvents')}</div></div>`;
+      setTimeout(() => this.coachState === 'events' && this.setCoach('none'), 6500);
+      $('nudges').classList.remove('spot');
+      return;
+    }
     $('bombBtn').classList.toggle('pulse', state === 'bomb');
     $('nudges').classList.toggle('spot', state === 'nudges');
     if (state === 'nudges') {
@@ -572,6 +586,12 @@ export class App {
         break;
       case 'revive':
         break;
+      case 'event':
+        sfx.fanfare();
+        vibrate('heavy');
+        this.banner(`<div class="t">${t(`ev.${e.id}`)}</div><div class="s">${t(`evd.${e.id}`)}</div>`, '#c77dff');
+        track('mine_event', { id: e.id, depth: this.run.depth });
+        break;
     }
   }
 
@@ -680,6 +700,23 @@ export class App {
       const fill = recharging.firstElementChild as HTMLElement | null;
       fill?.style.setProperty('height', `${Math.min(100, (r.nudgeTimer / r.stats.nudgeRegen) * 100).toFixed(0)}%`);
     }
+    // mine-event meter
+    const ek = r.eventGoal ? `${r.eventProgress}/${r.eventGoal}` : '';
+    if (ek !== this.evKey) {
+      this.evKey = ek;
+      $('evBar').classList.toggle('hidden', !r.eventGoal);
+      if (r.eventGoal) {
+        $('evFill').style.setProperty('--p', `${((r.eventProgress / r.eventGoal) * 100).toFixed(1)}%`);
+        $('evText').textContent = `${t('eventMeter')} · ${r.eventProgress}/${r.eventGoal}`;
+        if (!$('evIcon').innerHTML) $('evIcon').innerHTML = icon('sparkle', 26);
+      }
+    }
+    if (r.eventGoal && !this.save.hintEventsDone && r.time >= 2 && this.coachState === 'none') {
+      this.save.hintEventsDone = true;
+      this.persist();
+      this.setCoach('events');
+      track('hint_events');
+    }
     if (this.nudgeHintAt && r.time >= this.nudgeHintAt && this.coachState === 'none') {
       this.nudgeHintAt = 0;
       this.save.hintNudgeDone = true;
@@ -708,6 +745,8 @@ export class App {
     }
     const buffs: string[] = [];
     if (r.fever) buffs.push(`<span class="buff" style="--c:#c2368f">${icon('sparkle', 20)}${t('fever')} ${Math.ceil(r.feverTimer)}</span>`);
+    if (r.goldTimer > 0) buffs.push(`<span class="buff" style="--c:#b88a00">${icon('coin', 20)}x2 ${Math.ceil(r.goldTimer)}</span>`);
+    if (r.superTimer > 0) buffs.push(`<span class="buff" style="--c:#c2368f">${icon('hammer', 20)}x3 ${Math.ceil(r.superTimer)}</span>`);
     if (r.furnaceTimer > 0) buffs.push(`<span class="buff" style="--c:#c25a12">${icon('fire', 20)}x2 ${Math.ceil(r.furnaceTimer)}</span>`);
     for (const [k, v] of Object.entries(r.enchants)) {
       if (v > 0) buffs.push(`<span class="buff" style="--c:#6a35c2">${icon('sparkle', 20)}${t(`ench.${k}`).split(':')[0]}${v > 1 ? ' x' + v : ''}</span>`);

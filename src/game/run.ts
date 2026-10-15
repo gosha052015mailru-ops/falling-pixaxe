@@ -1,5 +1,7 @@
 import { B, blockDef } from './blocks';
 import {
+  MINE_EVENTS,
+  type MineEventId,
   BIOMES,
   CORE_REWARD,
   ENCHANTS,
@@ -39,7 +41,8 @@ export type GameEvent =
   | { t: 'combo'; n: number }
   | { t: 'fever' }
   | { t: 'revive' }
-  | { t: 'stuck' };
+  | { t: 'stuck' }
+  | { t: 'event'; id: MineEventId };
 
 export interface RunInit {
   seed: number;
@@ -50,6 +53,8 @@ export interface RunInit {
   milestones: number[];
   /** Scripted first run: guaranteed specials and wait for the first tap. */
   tutorial?: boolean;
+  /** Average blocks per mine event (0/undefined = mine events still locked). */
+  eventGoal?: number;
 }
 
 export interface RunResult {
@@ -75,6 +80,7 @@ export interface RunResult {
   tierUps: number;
   ores: number;
   fevers: number;
+  events: number;
 }
 
 interface PendingBlast {
@@ -166,6 +172,7 @@ export class Run {
     this.dynamite = init.stats.dynamite;
     this.totems = init.stats.totems;
     if (init.tutorial) this.setupTutorial();
+    this.eventGoal = this.rollEventGoal();
   }
 
   /** First run: every key "wow" event happens in the first ~30 m. */
@@ -196,6 +203,72 @@ export class Run {
   get workbenchCap(): number {
     const st = this.stats.startTier;
     return Math.min(MAX_TIER, st + RUN.workbenchTierCap + Math.floor(st / 3));
+  }
+
+  // ───────────────────────── mine events ─────────────────────────
+
+  /** Blocks needed for the next event (0 = events locked). */
+  eventGoal = 0;
+  eventProgress = 0;
+  eventsFired = 0;
+  goldTimer = 0;
+  superTimer = 0;
+
+  private rollEventGoal(): number {
+    const base = this.init.eventGoal ?? 0;
+    return base > 0 ? Math.max(MINE_EVENTS.goalMin, Math.round(base * this.rng.range(0.75, 1.25))) : 0;
+  }
+
+  private fireEvent(x: number, y: number): void {
+    this.eventProgress = 0;
+    this.eventGoal = this.rollEventGoal();
+    this.eventsFired++;
+    const id = this.rng.weighted((Object.keys(MINE_EVENTS.weights) as MineEventId[]).map((item) => ({ item, w: MINE_EVENTS.weights[item] })));
+    const px = Math.floor(this.x);
+    const py = Math.max(y, Math.floor(this.y));
+    const w = this.world;
+    const solidHere = (cx: number, cy: number) => {
+      const d = blockDef(w.get(cx, cy));
+      return !w.isWall(cx) && d.solid && !d.special && Number.isFinite(d.hp);
+    };
+    switch (id) {
+      case 'goldrush':
+        this.goldTimer = MINE_EVENTS.goldTime;
+        break;
+      case 'superpick':
+        this.superTimer = MINE_EVENTS.superTime;
+        break;
+      case 'oreVein': {
+        const biome = biomeAt(py + 3);
+        const best = [...biome.ores].sort((a, b) => blockDef(b.item).value - blockDef(a.item).value)[0].item;
+        let n = 0;
+        for (let cy = py + 2; cy <= py + 5 && n < 8; cy++) for (let cx = px - 2; cx <= px + 2 && n < 8; cx++) if (solidHere(cx, cy) && this.rng.chance(0.6)) {
+          w.set(cx, cy, best);
+          n++;
+        }
+        break;
+      }
+      case 'tntRain':
+        for (let i = 0, tries = 0; i < 4 && tries < 40; tries++) {
+          const cx = px + this.rng.int(-3, 3);
+          const cy = py + this.rng.int(3, 7);
+          if (solidHere(cx, cy)) {
+            w.set(cx, cy, B.TNT);
+            i++;
+          }
+        }
+        break;
+      case 'repair':
+        this.durability = Math.min(this.maxDur, this.durability + Math.round(this.maxDur * MINE_EVENTS.repairShare));
+        break;
+      case 'treasure':
+        for (const dx of [-1, 1]) if (!w.isWall(px + dx)) w.set(px + dx, py + 3, B.CHEST);
+        w.set(px, py + 4, B.CHEST);
+        break;
+    }
+    void x;
+    this.slow(0.4, 0.5);
+    this.emit({ t: 'event', id });
   }
 
   get fever(): boolean {
@@ -231,7 +304,7 @@ export class Run {
   }
 
   get damagePerHit(): number {
-    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency) * (this.fever ? RUN.feverDamage : 1);
+    return TIERS[this.tier].dmg * this.stats.powerMult * (1 + 0.4 * this.enchants.efficiency) * (this.fever ? RUN.feverDamage : 1) * (this.superTimer > 0 ? MINE_EVENTS.superDamage : 1);
   }
 
   private computeMaxDur(tier: number): number {
@@ -298,6 +371,8 @@ export class Run {
     }
     if (this.furnaceTimer > 0) this.furnaceTimer -= dt;
     if (this.feverTimer > 0) this.feverTimer -= dt;
+    if (this.goldTimer > 0) this.goldTimer -= dt;
+    if (this.superTimer > 0) this.superTimer -= dt;
     if (this.nudges < this.stats.nudgeCharges) {
       this.nudgeTimer += dt;
       if (this.nudgeTimer >= this.stats.nudgeRegen) {
@@ -522,6 +597,7 @@ export class Run {
       v *= 1 + 0.5 * this.enchants.fortune;
     }
     if (this.fever) v *= RUN.feverCoins;
+    if (this.goldTimer > 0) v *= MINE_EVENTS.goldCoins;
     return v;
   }
 
@@ -544,6 +620,7 @@ export class Run {
     }
     this.bouncesSinceBreak = 0;
     if (def.ore) this.oreCount++;
+    if (this.eventGoal > 0 && ++this.eventProgress >= this.eventGoal) this.fireEvent(x, y);
 
     const coins = this.blockValue(id, y) * this.comboMult;
     this.oreCoins += coins;
@@ -775,6 +852,7 @@ export class Run {
       tierUps: this.tierUps,
       ores: this.oreCount,
       fevers: this.fevers,
+      events: this.eventsFired,
     };
   }
 

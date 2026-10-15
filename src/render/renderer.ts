@@ -164,6 +164,11 @@ export class Renderer {
         fx.ring(this.lastPickX, this.lastPickY, 2.5, '#ff7ad9');
         fx.burst(this.lastPickX, this.lastPickY, RAINBOW, 40, 9, 0.14, 4, true);
         break;
+      case 'event':
+        this.doFlash('#c77dff', 0.5);
+        fx.ring(this.lastPickX, this.lastPickY, 3, '#e0b3ff');
+        fx.burst(this.lastPickX, this.lastPickY, ['#c77dff', '#ffd23f', '#ffffff'], 45, 9, 0.14, 3, true);
+        break;
       case 'revive':
         this.doFlash('#5dff7a', 0.8);
         fx.burst(this.lastPickX, this.lastPickY, ['#5dff7a', '#fff', '#ffe066'], 60, 10, 0.15, 3, true);

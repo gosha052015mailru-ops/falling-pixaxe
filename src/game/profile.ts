@@ -3,6 +3,7 @@
  * run history, monetization signals, segment and churn risk.
  * Feeds both the in-game "Profile" screen and analytics user properties.
  */
+import { MINE_EVENTS } from './config';
 import { dayKey } from './time';
 import type { RunResult } from './run';
 import type { SaveData } from './save';
@@ -16,6 +17,8 @@ export interface RunRecord {
   c: number;
   t: number;
   at: number;
+  /** Blocks broken. */
+  b?: number;
 }
 
 export interface Profile {
@@ -106,8 +109,27 @@ export function addPlayTime(save: SaveData, sec: number): void {
 export function recordRun(save: SaveData, r: RunResult, now: number): void {
   const p = save.profile;
   p.runSec += r.time;
-  p.history.push({ d: r.depth, c: r.totalCoins, t: Math.round(r.time), at: now });
+  p.history.push({ d: r.depth, c: r.totalCoins, t: Math.round(r.time), at: now, b: r.blocks });
   if (p.history.length > HISTORY) p.history.shift();
+}
+
+/** Total play time, including the current foreground stretch. */
+export function totalPlaySec(save: SaveData, liveSec = 0): number {
+  return save.profile.playSec + Math.max(0, liveSec);
+}
+
+/**
+ * Blocks per mine event for the next run: ~55 % of what this player usually breaks
+ * (average of the last 5 runs), or 0 while events are still locked (< 10 min played).
+ */
+export function eventGoalFor(save: SaveData, liveSec = 0): number {
+  if (totalPlaySec(save, liveSec) < MINE_EVENTS.unlockSec) return 0;
+  const recent = save.profile.history
+    .slice(-5)
+    .map((r) => r.b ?? 0)
+    .filter((b) => b > 0);
+  const avg = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 40;
+  return Math.max(MINE_EVENTS.goalMin, Math.min(MINE_EVENTS.goalMax, Math.round(avg * MINE_EVENTS.goalShare)));
 }
 
 export type Segment = 'new' | 'casual' | 'regular' | 'core';

@@ -8,6 +8,7 @@ import { buyDynamite, buyForge, buyMega, megaCost, buyUpgrade, canPrestige, deri
 import { Bot } from '../src/game/bot';
 import { applyResult, buyLiftStop, nextLiftStop, unlockedCheckpoints } from '../src/game/progress';
 import { Run } from '../src/game/run';
+import { eventGoalFor, recordRun } from '../src/game/profile';
 import { newSave } from '../src/game/save';
 
 const maxRuns = Number(process.argv[2] ?? 300);
@@ -21,11 +22,20 @@ save.difficulty = (diffArg?.slice(7) as typeof save.difficulty) || 'normal';
 const reached = new Map<number, { run: number; minutes: number }>();
 let minutes = 0;
 let lastLog = 0;
+let eventsOn = false;
+let totalEvents = 0;
+let eventRuns = 0;
 
 for (let i = 1; i <= maxRuns; i++) {
   const cps = unlockedCheckpoints(save).filter((d) => d <= save.bestDepth * 0.7);
   save.startDepth = cps[cps.length - 1] ?? 0;
-  const run = new Run({ seed: seed++, stats: deriveStats(save), bestDepth: save.bestDepth, milestones: save.milestones });
+  save.profile.playSec = minutes * 60;
+  const eventGoal = eventGoalFor(save);
+  if (eventGoal && !eventsOn) {
+    eventsOn = true;
+    console.log(`  ✦ mine events unlocked at ~${minutes.toFixed(0)} min (run ${i}, goal ${eventGoal} blocks)`);
+  }
+  const run = new Run({ seed: seed++, stats: deriveStats(save), bestDepth: save.bestDepth, milestones: save.milestones, eventGoal });
   const bot = new Bot(0.75);
   const dt = 1 / 60;
   let tierUps = 0;
@@ -37,6 +47,9 @@ for (let i = 1; i <= maxRuns; i++) {
   }
   const r = run.result();
   applyResult(save, r);
+  recordRun(save, r, 0);
+  totalEvents += r.events;
+  if (eventsOn) eventRuns++;
   minutes += r.time / 60 + 0.25; // + time in menus
   for (let b = 1; b < BIOMES.length; b++) if (r.depth >= BIOMES[b].from && !reached.has(b)) reached.set(b, { run: i, minutes });
   if (r.core && !reached.has(99)) reached.set(99, { run: i, minutes });
@@ -87,4 +100,5 @@ for (const [b, v] of [...reached.entries()].sort((a, c) => a[0] - c[0])) {
   const name = b === 99 ? `core (${CAMPAIGN_DEPTH}m)` : `${BIOMES[b].key} (${BIOMES[b].from}m)`;
   console.log(`  ${name.padEnd(18)} run ${String(v.run).padStart(3)}  ~${v.minutes.toFixed(0)} min`);
 }
+console.log(`events per run (after unlock): ${(totalEvents / Math.max(1, eventRuns)).toFixed(2)}`);
 console.log(`\nbest depth ${save.bestDepth}, coins ${Math.round(save.coins)}, gems ${save.gems}`);

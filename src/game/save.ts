@@ -95,6 +95,8 @@ export interface SaveData {
   liftStops: number[];
   /** The one-time explanation of the nudge-charges panel was shown. */
   hintNudgeDone: boolean;
+  /** The one-time explanation of the mine-event meter was shown. */
+  hintEventsDone: boolean;
   /** The soft "may we remind you?" question was shown (never nag twice). */
   pushAsked: boolean;
 }
@@ -150,6 +152,7 @@ export function newSave(): SaveData {
     shaftWidth: 0,
     liftStops: [],
     hintNudgeDone: false,
+    hintEventsDone: false,
     pushAsked: false,
   };
 }
