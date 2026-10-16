@@ -60,6 +60,7 @@ import { RETENTION_DAYS, playerMetrics } from '../game/profile';
 import { buyLiftStop, nextGoal, nextLiftStop, switchWorld, unlockedCheckpoints } from '../game/progress';
 import { dayKey } from '../game/time';
 import { pushPermission, requestPush } from '../notifications';
+import { EGG, PETS, PET_DUPES, PET_IDS, PET_MAX_LEVEL, RARITY_COLOR, buyEgg, equipPet, hatchEgg, petLevel, petPower, type PetId } from '../game/pets';
 import { Rng } from '../game/rng';
 import { isNative, setVibration, vibrate } from '../platform';
 import type { App } from './app';
@@ -424,6 +425,137 @@ export class Screens {
     this.on('[data-a=later]', () => this.closeAndNext(), host);
   }
 
+  /** The equipped pet next to the pickaxe on the home screen (an egg while there is none). */
+  private petBtnHtml(): string {
+    const s = this.s;
+    if (!this.app.isUnlocked('pets')) return '';
+    const pic = s.pet ? `<img class="pet-pic" src="${this.app.petUrl(s.pet)}" alt="">` : icon('egg', 40);
+    return `<button class="tile pet-tile ${s.eggs > 0 ? 'ready' : ''}" data-a="pets" style="--pc:${s.pet ? PETS[s.pet].color : '#ffd23f'}"><div class="box">${pic}</div>
+      <span class="cap">${t('pets')}</span>${s.eggs > 0 ? `<span class="badge">${s.eggs}</span>` : ''}</button>`;
+  }
+
+  private petDesc(id: PetId, lvl: number): string {
+    const p = petPower(id, Math.max(1, lvl));
+    const r = (v = 0) => String(Math.round(v * 10) / 10);
+    return t(`petd.${id}`, { e: r(p.every), b: p.blocks ?? 0, c: Math.round((p.coins ?? 0) * 100), w: Math.round((p.wear ?? 0) * 100), h: r((p.heal ?? 0) * 100), d: p.depth ?? 0 });
+  }
+
+  /** Pets: hatch eggs, pick who comes along. */
+  petsModal(): void {
+    const s = this.s;
+    const cards = PET_IDS.map((id) => {
+      const def = PETS[id];
+      const lvl = petLevel(s, id);
+      const rar = `<span class="lv" style="color:${RARITY_COLOR[def.rarity]}">${t(`prar.${def.rarity}`)}</span>`;
+      if (!lvl) {
+        return `<div class="card petcard dim"><div class="ic"><img class="unknown" src="${this.app.petUrl(id)}" alt=""></div>
+          <div class="info"><div class="nm">${t('petUnknown')}${rar}</div><div class="ds">${t('petFromEgg')}</div></div></div>`;
+      }
+      const on = s.pet === id;
+      const dup = s.pets[id]?.dup ?? 0;
+      const prog =
+        lvl >= PET_MAX_LEVEL
+          ? `<div class="ds" style="color:var(--gold)">${t('petMax')}</div>`
+          : bar(dup / PET_DUPES[lvl - 1], 'purple', t('petDup', { n: lvl + 1, a: dup, b: PET_DUPES[lvl - 1] }));
+      return `<div class="card petcard ${on ? 'on' : ''}" data-pet="${id}" style="--pc:${def.color}">
+        <div class="ic"><img src="${this.app.petUrl(id)}" alt=""></div>
+        <div class="info"><div class="nm">${t(`pet.${id}`)}<span class="lv">${t('petLvl', { n: lvl })}</span>${rar}</div>
+        <div class="ds">${this.petDesc(id, lvl)}</div>${prog}</div>
+        <span class="take">${on ? icon('check', 26) : t('petEquip')}</span></div>`;
+    }).join('');
+    const canBuy = s.gems >= EGG.price;
+    const host = openModal(`<div class="modal panel wide-modal">
+      <div class="ribbon" style="--rt:#ffd9a8;--rb:#e08a1f">${t('pets')}</div>
+      <p class="sub">${t('petsSub')}</p>
+      <div class="egg-row">${icon('egg', 44)}<b>${t('eggs', { n: s.eggs })}</b>
+        <button class="btn sm ${s.eggs > 0 ? 'gold pulse' : 'off'}" data-a="hatch">${t('eggOpen')}</button>
+        <button class="btn sm ${canBuy ? 'blue' : 'off'}" data-a="egg">+1 ${icon('gem', 18)}<span class="${canBuy ? '' : 'price-bad'}">${EGG.price}</span></button></div>
+      <div class="list">${cards}</div>
+      <button class="btn wide" data-a="ok">${t('ok')}</button></div>`);
+    this.on(
+      '[data-pet]',
+      (el) => {
+        const id = el.dataset.pet as PetId;
+        equipPet(s, s.pet === id ? '' : id);
+        sfx.click();
+        this.app.persist();
+        this.petsModal();
+      },
+      host,
+    );
+    this.on(
+      '[data-a=egg]',
+      () => {
+        if (!buyEgg(s)) return sfx.error();
+        sfx.buy();
+        track('purchase_item', { id: 'egg', gems: EGG.price });
+        this.app.persist();
+        this.bumpWallet();
+        this.petsModal();
+      },
+      host,
+    );
+    this.on(
+      '[data-a=hatch]',
+      () => {
+        if (s.eggs <= 0) return sfx.error();
+        this.hatchModal();
+      },
+      host,
+    );
+    this.on(
+      '[data-a=ok]',
+      () => {
+        sfx.click();
+        closeModal();
+        if (this.app.screen === 'home') this.home();
+      },
+      host,
+    );
+  }
+
+  /** The egg wobbles, cracks and a pet pops out. */
+  private hatchModal(): void {
+    const s = this.s;
+    const res = hatchEgg(s, new Rng(Date.now() >>> 0));
+    if (!res) return;
+    this.app.persist();
+    track('pet_hatch', { id: res.id, isNew: res.isNew ? 1 : 0, levelUp: res.levelUp ? 1 : 0 });
+    sfx.chest();
+    const host = openModal(`<div class="modal panel center hatch">
+      <div class="ribbon" style="--rt:#ffd9a8;--rb:#e08a1f">${t('eggHatching')}</div>
+      <div class="egg-wobble">${icon('egg', 120)}</div></div>`);
+    void host;
+    setTimeout(() => {
+      const def = PETS[res.id];
+      const lvl = petLevel(s, res.id);
+      const dup = s.pets[res.id]?.dup ?? 0;
+      const line = res.isNew
+        ? t('petNew')
+        : res.levelUp
+          ? t('petUp', { n: lvl })
+          : lvl >= PET_MAX_LEVEL
+            ? t('petMaxGems')
+            : t('petDup', { n: lvl + 1, a: dup, b: PET_DUPES[lvl - 1] });
+      if (res.isNew || res.levelUp || def.rarity === 'legendary') sfx.fanfare();
+      else sfx.rare();
+      vibrate('heavy');
+      const h = openModal(`<div class="modal panel center hatch" style="--pc:${def.color}">
+        <div class="ribbon" style="--rt:${RARITY_COLOR[def.rarity]};--rb:${def.color}">${t(`prar.${def.rarity}`)}</div>
+        <div class="pet-reveal"><img src="${this.app.petUrl(res.id)}" alt=""></div>
+        <h2 class="ol" style="color:${def.color};font-size:28px;margin:4px 0">${t(`pet.${res.id}`)}</h2>
+        <p class="ol" style="font-size:20px;font-weight:900;margin:4px 0">${line}</p>
+        <p class="sub">${this.petDesc(res.id, lvl)}</p>
+        ${s.eggs > 0 ? `<button class="btn gold wide" data-a="again">${icon('egg', 26)}<span>${t('eggOpen')} (${s.eggs})</span></button>` : ''}
+        <button class="btn wide" data-a="ok">${t('ok')}</button></div>`);
+      this.on('[data-a=again]', () => this.hatchModal(), h);
+      this.on('[data-a=ok]', () => {
+        sfx.click();
+        this.petsModal();
+      }, h);
+    }, 1100);
+  }
+
   /** "Power-ups for the run": the 3 chosen slots, tap to change. */
   private loadoutHtml(): string {
     const s = this.s;
@@ -539,6 +671,8 @@ export class Screens {
       right.push(`<button class="tile ${full >= 1 ? 'ready' : ''}" data-side="idle"><div class="box">${icon('cart', 42)}</div>
         <span class="cap" id="idleCap">${locked ? t('idleLocked') : fmt(pending)}</span>${locked ? '' : bar(full, 'gold')}</button>`);
     }
+    const pet = this.petBtnHtml();
+    if (pet) right.push(pet);
     return `<div class="side l">${left.join('')}</div><div class="side r">${right.join('')}</div>`;
   }
 
@@ -546,6 +680,14 @@ export class Screens {
     const side = document.getElementById('side');
     if (!side) return;
     this.on('[data-side=daily]', () => this.daily(), side);
+    this.on(
+      '[data-a=pets]',
+      () => {
+        sfx.click();
+        this.petsModal();
+      },
+      side,
+    );
     this.on(
       '[data-side=chest]',
       () => {

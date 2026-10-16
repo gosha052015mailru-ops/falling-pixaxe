@@ -1358,6 +1358,7 @@ h2 {
   inset: 0;
   z-index: 50;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   overflow-y: auto;
   padding: calc(20px + var(--safe-t)) 16px calc(20px + var(--safe-b));
@@ -2164,4 +2165,87 @@ h2 {
   image-rendering: pixelated;
   border: 2px solid var(--ink);
   border-radius: 8px;
+}
+
+/* ───────── pets ───────── */
+.pet-tile .box {
+  background: radial-gradient(circle at 45% 35%, color-mix(in srgb, var(--pc) 55%, #3a2d5c), #1d1433);
+}
+.pet-tile .pet-pic {
+  width: 46px;
+  height: 46px;
+  image-rendering: pixelated;
+  animation: bob 1.8s ease-in-out infinite;
+}
+.petcard {
+  cursor: pointer;
+}
+.petcard.on {
+  box-shadow: 0 0 0 3px var(--pc), 0 4px 0 var(--ink);
+}
+.petcard .ic {
+  background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--pc, #5d4a8c) 45%, #3a2d5c), #2a1f47);
+}
+.petcard .ic img.unknown {
+  filter: brightness(0) opacity(0.6);
+}
+.petcard .bar {
+  margin-top: 6px;
+}
+.petcard .take {
+  font-weight: 900;
+  color: var(--gold);
+  flex: none;
+}
+.egg-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+  padding: 8px 10px;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  background: rgba(16, 9, 30, 0.6);
+  font-size: 16px;
+}
+.egg-row b {
+  flex: 1;
+}
+.egg-row .btn {
+  min-width: 0;
+  padding: 0 12px;
+}
+.egg-wobble {
+  margin: 24px auto;
+  width: 120px;
+  animation: eggWobble 0.36s ease-in-out infinite;
+}
+@keyframes eggWobble {
+  25% {
+    transform: rotate(-12deg) scale(1.03);
+  }
+  75% {
+    transform: rotate(12deg) scale(1.06);
+  }
+}
+.pet-reveal {
+  margin: 14px auto 4px;
+  width: 140px;
+  height: 140px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--pc) 60%, #fff) 0%, transparent 70%);
+  animation: petPop 0.5s cubic-bezier(0.3, 1.6, 0.5, 1) both;
+}
+.pet-reveal img {
+  width: 112px;
+  height: 112px;
+  image-rendering: pixelated;
+}
+@keyframes petPop {
+  from {
+    transform: scale(0.2) rotate(-20deg);
+    opacity: 0;
+  }
 }

@@ -59,6 +59,8 @@ const paths: Record<string, string> = {
   phantom: `<g opacity=".5"><path d="M5 9c6-6 16-6 22 0-6-2-16-2-22 0z" fill="#b8c4ff" ${SW}/></g><path d="M5 14c6-6 16-6 22 0-6-2-16-2-22 0z" fill="#dfe4ff" ${SW}/><path d="M15 13h3l-2 16h-2z" fill="#b8c4ff" ${SW}/><path d="M4 21h5M23 24h5M3 27h4" stroke="#b8c4ff" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="2 2"/>`,
   mystery: `<rect x="4" y="4" width="24" height="24" rx="4" fill="#5a2d91" ${SW}/><path d="M12 12a4 4 0 1 1 6 3.4c-1.4.8-2 1.6-2 3.1" fill="none" stroke="#ffd23f" stroke-width="3.4" stroke-linecap="round"/><circle cx="16" cy="23" r="2" fill="#ffd23f"/>`,
   supply: `<rect x="4" y="6" width="24" height="21" rx="2" fill="#3f7a3a" ${SW}/><path d="M16 10v13M9.5 16.5h13" stroke="#9cff6b" stroke-width="4" stroke-linecap="round"/><path d="M4 11h24" stroke="${O}" stroke-width="2"/>`,
+  egg: `<path d="M16 3c6 0 11 9 11 16a11 9.5 0 0 1-22 0C5 12 10 3 16 3z" fill="#fff3d6" ${SW}/><path d="M7 17l4-3 4 3 4-3 4 3 3-2" fill="none" stroke="#ff9a3c" stroke-width="2.4" stroke-linejoin="round"/><circle cx="12" cy="23" r="1.8" fill="#5ab0ff"/><circle cx="20" cy="22" r="1.4" fill="#ff7ad9"/><path d="M11 8a5 5 0 0 1 3-2" stroke="#fff" stroke-width="2.4" stroke-linecap="round" fill="none"/>`,
+  paw: `<ellipse cx="16" cy="21" rx="7" ry="6" fill="#ffb347" ${SW}/><circle cx="7" cy="13" r="3" fill="#ffb347" ${SW}/><circle cx="12.5" cy="8" r="3" fill="#ffb347" ${SW}/><circle cx="19.5" cy="8" r="3" fill="#ffb347" ${SW}/><circle cx="25" cy="13" r="3" fill="#ffb347" ${SW}/>`,
   sparkle: `<path d="M16 3l3 10 10 3-10 3-3 10-3-10-10-3 10-3z" fill="#fff6a8" ${SW}/>`,
 };
 

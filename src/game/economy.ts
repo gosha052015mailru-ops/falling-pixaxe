@@ -1,3 +1,4 @@
+import { runPet, type PetId } from './pets';
 import {
   BOOSTS,
   type BoostId,
@@ -247,6 +248,8 @@ export interface RunStats {
   world: number;
   /** Highest tier workbenches may reach in this world. */
   maxTier: number;
+  /** The pet that comes along. */
+  pet?: { id: PetId; lvl: number };
 }
 
 export function deriveStats(save: SaveData): RunStats {
@@ -280,5 +283,6 @@ export function deriveStats(save: SaveData): RunStats {
     loadout: save.loadout.filter((id) => boostAvailable(save, id)),
     world: save.world,
     maxTier: Math.max(save.forgeTier, WORLDS[Math.max(save.world, save.worldsOpen - 1)].maxTier),
+    pet: runPet(save),
   };
 }

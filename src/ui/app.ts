@@ -1,3 +1,5 @@
+import { makePet } from '../render/petSprites';
+import type { PetId } from '../game/pets';
 import { App as CapApp } from '@capacitor/app';
 import { flush, setUserProps, startAnalytics, track } from '../analytics';
 import { BIOME_THEMES, music, type ThemeId } from '../audio/music';
@@ -257,6 +259,16 @@ export class App {
     }
     return u;
   }
+
+  petUrl(id: PetId): string {
+    let u = this.petImgs.get(id);
+    if (!u) {
+      u = makePet(id, 4).toDataURL();
+      this.petImgs.set(id, u);
+    }
+    return u;
+  }
+  private petImgs = new Map<PetId, string>();
 
   blockUrl(id: number): string {
     let u = this.blockImg.get(id);
@@ -722,6 +734,11 @@ export class App {
         if (e.id !== 'twin' && e.id !== 'teleport') sfx.nudge();
         break;
       case 'twinPoof':
+        break;
+      case 'pet':
+        if (e.id === 'fairy') sfx.magic();
+        else if (e.id === 'dragon') sfx.sizzle();
+        else if (e.id === 'magpie') sfx.coin();
         break;
       case 'zap':
         sfx.dash(0.3);

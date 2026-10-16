@@ -3,7 +3,9 @@ import { BOOSTS, BOOST_FX, WORLDS, WORLD_W, biomeAt, biomeIndex, biomesOf } from
 import type { GameEvent, Run } from '../game/run';
 import { fmt } from '../ui/format';
 import { t } from '../ui/i18n';
+import { PETS, type PetId } from '../game/pets';
 import { Particles } from './particles';
+import { makePet } from './petSprites';
 import { buildTextures, shade, type Textures } from './textures';
 
 const WALL_VIS = 0.5;
@@ -61,6 +63,11 @@ export class Renderer {
   private pulls: { x0: number; y0: number; x: number; y: number; life: number }[] = [];
   /** Ice rift: a cold streak behind the plunging pickaxe. */
   private riftGlow = 0;
+  /** The pet companion: where it is drawn, and a quick dash when it uses its ability. */
+  private petX = 4.5;
+  private petY = 0;
+  private petDash: { x: number; y: number; life: number } | null = null;
+  private petImg = new Map<PetId, HTMLCanvasElement>();
   private zaps: { pts: [number, number][]; life: number }[] = [];
   private lasers: { y: number; life: number }[] = [];
   /** Settings / adaptive quality. */
@@ -312,6 +319,21 @@ export class Renderer {
         fx.burst(e.x, e.y, ['#3f7a3a', '#9cff6b', '#ffffff'], 40, 8, 0.14, 4, true);
         fx.text(e.x, e.y - 1, e.ids.length ? `+1 ×${e.ids.length}` : '+$', '#9cff6b', 0.7);
         break;
+      case 'pet': {
+        const c = PETS[e.id].color;
+        this.petDash = { x: e.x, y: e.y, life: 0.35 };
+        if (e.id === 'fairy') {
+          fx.burst(this.lastPickX, this.lastPickY, ['#ff7ad9', '#ffe6fa', '#5dff7a'], 24, 6, 0.12, -2, true);
+          fx.text(this.lastPickX, this.lastPickY - 1, `+${e.n}`, '#5dff7a', 0.55);
+        } else if (e.id === 'dragon') {
+          for (let i = 0; i < e.n; i++) fx.burst(this.lastPickX, e.y + i, ['#ff5a3c', '#ffb347', '#ffd23f', '#555'], 14, 6, 0.16, -4, true);
+          this.shake(0.2);
+        } else if (e.id === 'magpie') {
+          this.pulls.push({ x0: this.petX, y0: this.petY, x: e.x, y: e.y, life: 0.22 });
+          fx.burst(e.x, e.y, [c, '#ffffff', '#ffd23f'], 8, 4, 0.1, 0, true);
+        } else fx.burst(e.x, e.y, ['#7a5a44', '#c8a27c', '#fff'], 12, 5, 0.12, 6);
+        break;
+      }
       case 'skid':
         fx.burst(e.x - e.dir * 0.3, e.y, ['#ffffff', '#d9f2ff', '#9fd8ff'], 5, 3, 0.09, 6);
         break;
@@ -350,6 +372,24 @@ export class Renderer {
     for (const p of this.portals) p.life -= dt;
     this.portals = this.portals.filter((p) => p.life > 0);
     if (this.beam && (this.beam.life -= dt) <= 0) this.beam = null;
+    // the pet hovers behind the pickaxe, darting out when it does something
+    if (run.stats.pet) {
+      let tx = run.x + (run.vx > 0.5 ? -1.1 : 1.1);
+      let ty = run.y - 0.9 + Math.sin(this.time * 4) * 0.15;
+      if (this.petDash && (this.petDash.life -= dt) > 0) {
+        tx = this.petDash.x;
+        ty = this.petDash.y - 0.4;
+      } else this.petDash = null;
+      const k = Math.min(1, dt * (this.petDash ? 14 : 6));
+      this.petX += (tx - this.petX) * k;
+      this.petY += (ty - this.petY) * k;
+      if (Math.abs(run.y - this.petY) > 8) {
+        this.petX = tx;
+        this.petY = ty;
+      }
+      if (run.stats.pet.id === 'fairy' && Math.random() < 0.3) this.fx.burst(this.petX, this.petY + 0.2, ['#ffe6fa', '#fff6a8'], 1, 1, 0.08, 2, true);
+      if (run.stats.pet.id === 'dragon' && Math.random() < 0.15) this.fx.burst(this.petX - 0.2, this.petY, ['#ff5a3c', '#555'], 1, 1, 0.08, -3, true);
+    }
     for (const z of this.zaps) z.life -= dt;
     this.zaps = this.zaps.filter((z) => z.life > 0);
     for (const l of this.lasers) l.life -= dt;
@@ -675,6 +715,22 @@ export class Renderer {
       this.drawPick(pick, px, py, run.angle, s, gv);
       ctx.globalAlpha = 1;
       if (run.shieldTimer > 0) this.drawShield(toX(run.x), toY(run.y), run.shieldTimer, s * PICK_SIZE * this.pickScale * gv * 0.62);
+    }
+
+    // the pet
+    if (run.stats.pet && (!run.over || run.core)) {
+      const id = run.stats.pet.id;
+      let img = this.petImg.get(id);
+      if (!img) {
+        img = makePet(id, 2);
+        this.petImg.set(id, img);
+      }
+      const size = s * 0.95;
+      ctx.save();
+      ctx.translate(toX(this.petX), toY(this.petY));
+      if (this.petX < run.x) ctx.scale(-1, 1); // art faces left: always look at the pickaxe
+      ctx.drawImage(img, -size / 2, -size / 2, size, size);
+      ctx.restore();
     }
 
     // particles

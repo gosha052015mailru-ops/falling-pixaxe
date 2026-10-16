@@ -1,3 +1,4 @@
+import { PET_LEVEL, type PetId, type PetState } from './pets';
 import { UPGRADES, type BoostId, type UpgradeId } from './config';
 import { freshProfile, type Profile } from './profile';
 
@@ -152,6 +153,12 @@ export interface SaveData {
   worldSaves: WorldSave[];
   /** Worlds whose "new world" welcome was already shown. */
   worldIntro: number[];
+  /** Pets: level and duplicates (see pets.ts). */
+  pets: Partial<Record<PetId, PetState>>;
+  /** Equipped pet ('' = none). */
+  pet: PetId | '';
+  /** Unopened pet eggs. */
+  eggs: number;
 }
 
 export function freshMissions(): MissionState {
@@ -221,6 +228,9 @@ export function newSave(): SaveData {
     worldsOpen: 1,
     worldSaves: [freshWorldSave(), freshWorldSave(), freshWorldSave()],
     worldIntro: [0],
+    pets: {},
+    pet: '',
+    eggs: 0,
   };
 }
 
@@ -249,13 +259,21 @@ export function migrate(raw: unknown): SaveData {
   out.quests = r.quests && Array.isArray(r.quests.list) ? r.quests : base.quests;
   out.worldSaves = base.worldSaves.map((w, i) => ({ ...w, ...(Array.isArray(r.worldSaves) ? r.worldSaves[i] ?? {} : {}) }));
   out.worldIntro = Array.isArray(r.worldIntro) ? r.worldIntro : base.worldIntro;
+  out.pets = r.pets && typeof r.pets === 'object' ? { ...r.pets } : {};
+  if (out.pet && !(out.pets[out.pet]?.lvl ?? 0)) out.pet = '';
+  // players already past level 7 when pets came out get the level-7 gift
+  if (!r.pets && (r.level ?? 0) >= PET_LEVEL) {
+    out.pets = { mole: { lvl: 1, dup: 0 } };
+    out.pet = 'mole';
+    out.eggs = 1;
+  }
   // players who already beat the Core before worlds existed get the Frost world right away
   if (r.coreReached && (r.worldsOpen ?? 1) < 2) out.worldsOpen = 2;
   // v1 players already know how to play
   if (r.version === 1 && (r.runs ?? 0) > 0) out.tutorialDone = true;
   // existing players keep the balance they were playing with
   if (!r.difficulty && (r.runs ?? 0) > 0) out.difficulty = 'normal';
-  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen', 'pickSize', 'shaftWidth', 'dashDown', 'world', 'worldsOpen'] as const) {
+  for (const k of ['coins', 'gems', 'cycleCoins', 'totalCoins', 'forgeTier', 'dynamite', 'totems', 'bestDepth', 'startDepth', 'shards', 'xp', 'level', 'freeChestAt', 'idleLast', 'dailyStreak', 'lastSeen', 'pickSize', 'shaftWidth', 'dashDown', 'world', 'worldsOpen', 'eggs'] as const) {
     if (typeof out[k] !== 'number' || !Number.isFinite(out[k])) out[k] = base[k];
   }
   out.worldsOpen = Math.max(1, Math.min(3, out.worldsOpen));

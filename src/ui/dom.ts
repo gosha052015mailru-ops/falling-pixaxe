@@ -39,6 +39,7 @@ export function rewardTiles(r: Reward, labels: { totem: string; dynamite: string
   if (r.dynamite) items.push(tile('bomb', '+' + r.dynamite));
   if (r.totems) items.push(tile('totem', '+' + r.totems));
   for (const [id, n] of Object.entries(r.boosts ?? {})) if (n) items.push(tile(BOOST_ICON[id], '+' + n));
+  if (r.eggs) items.push(tile('egg', '+' + r.eggs));
   void labels;
   return `<div class="rewards">${items.join('')}</div>`;
 }

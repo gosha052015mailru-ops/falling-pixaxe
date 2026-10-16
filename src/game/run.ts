@@ -20,11 +20,12 @@ import {
   type RuneId,
 } from './config';
 import type { RunStats } from './economy';
+import { petPower, type PetId } from './pets';
 import { Rng } from './rng';
 import { World } from './world';
 
 export type ChestLoot = 'coins' | 'gems' | 'dynamite' | 'durability';
-export type BreakCause = 'pick' | 'blast' | 'twin' | 'magnet' | 'zap' | 'hole' | 'laser' | 'phantom';
+export type BreakCause = 'pick' | 'blast' | 'twin' | 'magnet' | 'zap' | 'hole' | 'laser' | 'phantom' | 'pet';
 
 /** A homing rocket (power-up) or a falling star (event): flies to a cell and blows up. */
 export interface Projectile {
@@ -88,7 +89,9 @@ export type GameEvent =
   | { t: 'laser'; y: number }
   | { t: 'supply'; ids: BoostId[]; x: number; y: number }
   | { t: 'mystery'; x: number; y: number }
-  | { t: 'starHit'; x: number; y: number };
+  | { t: 'starHit'; x: number; y: number }
+  /** The pet used its ability at (x, y); `n` = blocks / coins / durability healed. */
+  | { t: 'pet'; id: PetId; x: number; y: number; n: number };
 
 export interface RunInit {
   seed: number;
@@ -252,6 +255,8 @@ export class Run {
   private alchemyCells = new Map<string, [B, B]>();
   turboTimer = 0;
   chainTimer = 0;
+  /** Seconds until the pet acts again. */
+  petCd = 0;
   private magnetTick = 0;
   private bouncesSinceBreak = 0;
 
@@ -264,6 +269,7 @@ export class Run {
 
   constructor(readonly init: RunInit) {
     this.stats = init.stats;
+    if (init.stats.pet) this.petCd = petPower(init.stats.pet.id, init.stats.pet.lvl).every ?? 0;
     this.rng = new Rng(init.seed);
     this.world = new World(init.seed, init.stats.startDepth, init.stats.luckMult, undefined, init.tutorial ? 1 : init.stats.hpMult, init.stats.worldWidth, init.stats.world ?? 0);
     this.x = this.world.width / 2;
@@ -835,6 +841,69 @@ export class Run {
     this.emit({ t: 'boostEnd', id: 'phantom' });
   }
 
+  /** The pet's ability: mole digs, magpie steals ore, fairy heals, dragon breathes fire. */
+  private updatePet(dt: number): void {
+    const { id, lvl } = this.stats.pet!;
+    if (id === 'cat' || id === 'turtle') return; // passive
+    if ((this.petCd -= dt) > 0) return;
+    const p = petPower(id, lvl);
+    this.petCd = p.every ?? 5;
+    const cx = Math.floor(this.x);
+    const below = Math.floor(this.y + this.radius + 0.1);
+    switch (id) {
+      case 'mole': {
+        let n = 0;
+        for (let cy = below; cy < below + 6 && n < (p.blocks ?? 2); cy++) {
+          if (!this.smashable(cx, cy)) continue;
+          if (!n) this.emit({ t: 'pet', id, x: cx + 0.5, y: cy + 0.5, n: p.blocks ?? 2 });
+          this.breakBlock(cx, cy, 'pet', false);
+          n++;
+        }
+        if (!n) this.petCd = 0.5;
+        break;
+      }
+      case 'magpie': {
+        const r = p.reach ?? 5;
+        let best: [number, number] | null = null;
+        let bestD = Infinity;
+        for (let cy = Math.floor(this.y - r); cy <= Math.floor(this.y + r); cy++) {
+          for (let x = cx - r; x <= cx + r; x++) {
+            if (this.world.isWall(x) || !blockDef(this.world.get(x, cy)).ore) continue;
+            const d = Math.hypot(x + 0.5 - this.x, cy + 0.5 - this.y);
+            if (d <= r && d < bestD) {
+              bestD = d;
+              best = [x, cy];
+            }
+          }
+        }
+        if (!best) {
+          this.petCd = 0.5;
+          break;
+        }
+        this.emit({ t: 'pet', id, x: best[0] + 0.5, y: best[1] + 0.5, n: 1 });
+        this.breakBlock(best[0], best[1], 'pet', false);
+        break;
+      }
+      case 'fairy': {
+        const heal = Math.round(this.maxDur * (p.heal ?? 0.06));
+        if (this.durability >= this.maxDur) {
+          this.petCd = 1;
+          break;
+        }
+        this.durability = Math.min(this.maxDur, this.durability + heal);
+        this.emit({ t: 'pet', id, x: this.x, y: this.y, n: heal });
+        break;
+      }
+      case 'dragon': {
+        this.emit({ t: 'pet', id, x: this.x, y: below + 0.5, n: p.depth ?? 3 });
+        for (let cy = below; cy < below + (p.depth ?? 3) && !this.over; cy++) {
+          for (let x = cx - 1; x <= cx + 1; x++) if (this.smashable(x, cy)) this.breakBlock(x, cy, 'pet', false);
+        }
+        break;
+      }
+    }
+  }
+
   /** Supply crate: +1 of every power-up in the loadout (kept after the run if unused). */
   private openSupply(x: number, y: number): void {
     this.supplies++;
@@ -1013,6 +1082,7 @@ export class Run {
     if (this.hole && !this.over) this.updateHole(dt);
     if (this.laserTimer > 0 && !this.over) this.updateLaser(dt);
     if (this.projectiles.length && !this.over) this.updateProjectiles(dt);
+    if (this.stats.pet && !this.over) this.updatePet(dt);
 
     this.angle += this.angVel * dt;
     this.angVel *= Math.exp(-0.8 * dt);
@@ -1238,7 +1308,9 @@ export class Run {
     if (cost <= 0 || this.dashGrace > 0 || this.shieldTimer > 0 || this.meteorTimer > 0) return;
     const save = Math.min(0.75, 0.25 * this.enchants.unbreaking);
     if (save > 0 && this.rng.chance(save)) return;
-    this.durability -= cost * (WORLDS[this.worldIdx]?.wear ?? 1);
+    const pet = this.stats.pet;
+    const shell = pet?.id === 'turtle' ? 1 - (petPower('turtle', pet.lvl).wear ?? 0) : 1;
+    this.durability -= cost * (WORLDS[this.worldIdx]?.wear ?? 1) * shell;
   }
 
   private die(): void {
@@ -1268,6 +1340,7 @@ export class Run {
     const def = blockDef(id);
     let v = def.value * (1 + (Math.max(0, y) + this.world.offset) / RUN.depthValueDiv);
     v *= this.stats.coinMult * (1 + TIERS[this.tier].coinBonus);
+    if (this.stats.pet?.id === 'cat') v *= 1 + (petPower('cat', this.stats.pet.lvl).coins ?? 0);
     if (def.ore) {
       if (this.furnaceTimer > 0) v *= 2;
       v *= 1 + 0.5 * this.enchants.fortune;

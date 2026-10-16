@@ -7,6 +7,7 @@ import { BLOCKS, B } from './blocks';
 import { BOOST_IDS, DASH_DOWN, type BoostId } from './config';
 import { addBoost, addCoins, globalBest, niceRound, rewardScale } from './economy';
 import type { RunResult } from './run';
+import { PET_LEVEL, addPet, petLevel } from './pets';
 import { Rng } from './rng';
 import { dayKey } from './time';
 import type { Mission, SaveData } from './save';
@@ -33,12 +34,15 @@ export interface Reward {
   totems?: number;
   chest?: ChestRarity;
   boosts?: Partial<Record<BoostId, number>>;
+  eggs?: number;
 }
 
 export function levelReward(save: SaveData, level: number): Reward {
   const r: Reward = { gems: 2 + Math.floor(level / 5), coins: Math.round(rewardScale(save) * 0.5) };
   // power-ups open with a starter pack so the first loadout is never empty
   if (level === FEATURE_LEVEL.boosts) r.boosts = { giant: 2, twin: 2, teleport: 2, shield: 2, lightning: 1, rockets: 1 };
+  // pets: the first egg comes with the unlock, then one every 3 levels
+  if (level >= FEATURE_LEVEL.pets && (level - FEATURE_LEVEL.pets) % 3 === 0) r.eggs = 1;
   return r;
 }
 
@@ -51,12 +55,14 @@ export function addXp(save: SaveData, xp: number): number[] {
     save.level++;
     reached.push(save.level);
     grant(save, levelReward(save, save.level));
+    // the first pet is a gift: a little mole that digs along
+    if (save.level === FEATURE_LEVEL.pets && !petLevel(save, 'mole')) addPet(save, 'mole');
     if (save.level === FEATURE_LEVEL.boosts) for (const id of ['giant', 'teleport'] as BoostId[]) if (save.loadout.length < 3 && !save.loadout.includes(id)) save.loadout.push(id);
   }
   return reached;
 }
 
-export type Feature = 'upgrades' | 'forge' | 'quests' | 'collection' | 'items' | 'boosts' | 'freeChest' | 'idle' | 'achievements' | 'daily';
+export type Feature = 'upgrades' | 'forge' | 'quests' | 'collection' | 'items' | 'boosts' | 'freeChest' | 'idle' | 'achievements' | 'daily' | 'pets';
 
 /** One new system at a time: never more than two unlocks on a level-up. */
 export const FEATURE_LEVEL: Record<Feature, number> = {
@@ -70,6 +76,7 @@ export const FEATURE_LEVEL: Record<Feature, number> = {
   idle: 5,
   collection: 5,
   achievements: 6,
+  pets: PET_LEVEL,
 };
 
 export function unlocked(save: SaveData, f: Feature): boolean {
@@ -107,6 +114,7 @@ export function grant(save: SaveData, r: Reward): void {
   if (r.dynamite) save.dynamite += r.dynamite;
   if (r.totems) save.totems += r.totems;
   for (const [id, n] of Object.entries(r.boosts ?? {})) if (n) addBoost(save, id as BoostId, n);
+  if (r.eggs) save.eggs += r.eggs;
 }
 
 export const FREE_CHEST_COOLDOWN = 4 * HOUR;
