@@ -182,8 +182,8 @@ export const DASH_DOWN = {
  * into a run (loadout), each with a per-run cap. Price = rewardScale × price (always ~a
  * fraction of one run's income, see GAME_DESIGN §6.12).
  */
-export type BoostId = 'dynamite' | 'giant' | 'twin' | 'teleport' | 'shield' | 'magnet' | 'meteor';
-export const BOOST_IDS: BoostId[] = ['dynamite', 'giant', 'twin', 'teleport', 'shield', 'magnet', 'meteor'];
+export type BoostId = 'dynamite' | 'giant' | 'twin' | 'teleport' | 'shield' | 'lightning' | 'blackhole' | 'rockets' | 'laser' | 'phantom' | 'magnet' | 'meteor';
+export const BOOST_IDS: BoostId[] = ['dynamite', 'giant', 'twin', 'teleport', 'shield', 'lightning', 'blackhole', 'rockets', 'laser', 'phantom', 'magnet', 'meteor'];
 /** `world` = the only world where this power-up works (world-exclusive). */
 export const BOOSTS: Record<BoostId, { price: number; perRun: number; time?: number; world?: number }> = {
   dynamite: { price: 0, perRun: 5 },
@@ -195,6 +195,16 @@ export const BOOSTS: Record<BoostId, { price: number; perRun: number; time?: num
   teleport: { price: 0.7, perRun: 2 },
   /** Shield: no durability loss at all. */
   shield: { price: 0.6, perRun: 2, time: 8 },
+  /** Chain lightning: every pickaxe hit arcs into nearby blocks of the same kind and breaks them. */
+  lightning: { price: 0.8, perRun: 2, time: 8 },
+  /** Black hole: opens below the pickaxe, grows and swallows the rock around it. */
+  blackhole: { price: 0.9, perRun: 2, time: 3.5 },
+  /** Rocket salvo: homing rockets fly to the most valuable blocks below and blow up. */
+  rockets: { price: 0.7, perRun: 3 },
+  /** Laser: a beam cuts the whole row under the pickaxe again and again. */
+  laser: { price: 0.8, perRun: 2, time: 5 },
+  /** Phantom: the pickaxe falls through the rock, collecting only ores and special blocks. */
+  phantom: { price: 0.7, perRun: 2, time: 2.6 },
   /** Frost only: pulls in and mines every ore around the pickaxe. */
   magnet: { price: 0.9, perRun: 2, time: 8, world: 1 },
   /** Ruins only: the pickaxe turns into a meteor and smashes a 3-wide shaft straight down. */
@@ -212,6 +222,19 @@ export const BOOST_FX = {
   meteorSpeed: 15,
   /** Columns smashed on each side of the meteor. */
   meteorHalf: 1,
+  /** Lightning: blocks of the same kind it can jump to, and how far (cells). */
+  lightningChain: 4,
+  lightningReach: 4,
+  /** Black hole: offset below the pickaxe, start and end radius. */
+  holeDrop: 2.5,
+  holeR: [0.8, 3.3] as [number, number],
+  holeEvery: 0.1,
+  rocketCount: 5,
+  rocketRows: 12,
+  rocketSpeed: 16,
+  rocketBlast: 1.35,
+  laserEvery: 0.3,
+  phantomSpeed: 13,
 };
 
 /** Ice rift (Frost): the pickaxe plunges straight down through this many blocks, for free. */
@@ -239,13 +262,31 @@ export const FAST_FORWARD: [number, number][] = [
  * The goal is about half of the blocks the player usually breaks in a run (±25 % each time),
  * so a run sees 1–2 events. Unlocked after ~10 min of play.
  */
-export type MineEventId = 'goldrush' | 'superpick' | 'oreVein' | 'tntRain' | 'repair' | 'treasure';
+export type MineEventId = 'goldrush' | 'superpick' | 'oreVein' | 'tntRain' | 'repair' | 'treasure' | 'alchemy' | 'turbo' | 'quake' | 'starfall' | 'chain';
 export const MINE_EVENTS = {
   unlockSec: 600,
   goalShare: 0.55,
   goalMin: 15,
   goalMax: 400,
-  weights: { goldrush: 3, superpick: 3, oreVein: 3, tntRain: 2, repair: 2, treasure: 2 } as Record<MineEventId, number>,
+  weights: { goldrush: 2, superpick: 2, oreVein: 2, tntRain: 1, repair: 2, treasure: 1, alchemy: 3, turbo: 3, quake: 3, starfall: 3, chain: 3 } as Record<MineEventId, number>,
+  /** The mystery block only rolls the big new events. */
+  mysteryWeights: { alchemy: 1, turbo: 1, quake: 1, starfall: 1, chain: 1 } as Partial<Record<MineEventId, number>>,
+  /** Alchemy: every rock on screen turns into ore for this long, then turns back. */
+  alchemyTime: 5,
+  alchemyRows: [-3, 14] as [number, number],
+  /** Turbo: the pickaxe simulates this much faster (falls, hits and bounces). */
+  turboTime: 6,
+  turboSpeed: 1.8,
+  /** Earthquake: share of the rock below that crumbles. */
+  quakeRows: 14,
+  quakeShare: 0.35,
+  /** Starfall: falling stars smash into the rock below. */
+  starCount: 7,
+  starTime: 2.5,
+  starBlast: 1.6,
+  /** Chain reaction: every block the pickaxe breaks pops a small blast. */
+  chainTime: 5,
+  chainBlast: 1.15,
   goldTime: 8,
   goldCoins: 2,
   superTime: 6,
@@ -296,7 +337,7 @@ export interface BiomeDef {
   milestoneGems: number;
 }
 
-export type SpecialSpawn = 'workbench' | 'anvil' | 'tnt' | 'chest' | 'furnace' | 'enchant' | 'slime' | 'luckgem' | 'rift' | 'rune';
+export type SpecialSpawn = 'workbench' | 'anvil' | 'tnt' | 'chest' | 'furnace' | 'enchant' | 'slime' | 'luckgem' | 'rift' | 'rune' | 'mystery' | 'supply';
 /** These only spawn where a biome asks for them (multiplier defaults to 0). */
 export const SPECIAL_OPT_IN: SpecialSpawn[] = ['slime', 'rift', 'rune'];
 
@@ -312,6 +353,10 @@ export const SPECIAL_BASE: Record<SpecialSpawn, number> = {
   luckgem: 0.0008,
   rift: 0.003,
   rune: 0.003,
+  /** "?" block: a random big event. */
+  mystery: 0.0022,
+  /** Supply crate: +1 of every power-up in the loadout. */
+  supply: 0.0009,
 };
 
 export const SPECIAL_BLOCK: Record<SpecialSpawn, B> = {
@@ -325,6 +370,8 @@ export const SPECIAL_BLOCK: Record<SpecialSpawn, B> = {
   luckgem: B.LUCKGEM,
   rift: B.RIFT,
   rune: B.RUNE,
+  mystery: B.MYSTERY,
+  supply: B.SUPPLY,
 };
 
 export const BIOMES: BiomeDef[] = [

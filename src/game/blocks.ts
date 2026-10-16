@@ -56,6 +56,9 @@ export enum B {
   SUNSTONE,
   RELIC,
   RUNE,
+  // ── any world ──
+  MYSTERY,
+  SUPPLY,
 }
 
 export type Special =
@@ -71,7 +74,11 @@ export type Special =
   /** Frost: an ice rift — the pickaxe plunges straight down through it. */
   | 'rift'
   /** Ruins: an ancient rune — a random short blessing. */
-  | 'rune';
+  | 'rune'
+  /** "?" block: a random big mine event. */
+  | 'mystery'
+  /** Supply crate: +1 of every power-up brought into the run. */
+  | 'supply';
 
 export type TextureStyle = 'plain' | 'grass' | 'ore' | 'gem' | 'special' | 'liquid' | 'bricks' | 'ice';
 
@@ -178,6 +185,8 @@ const defs: BlockDef[] = [
   d(B.SUNSTONE, 'sunstone', 110, 600, ['#4a3a5e', '#fff2a8', '#ff7a1a'], 'gem', { ore: true, durCost: 4 }),
   d(B.RELIC, 'relic', 200, 1500, ['#1e1a24', '#ffd23f', '#ff66d9'], 'gem', { ore: true, durCost: 5 }),
   d(B.RUNE, 'rune', 1, 0, ['#2a1f3a', '#ffd23f', '#6ff3f0'], 'special', { special: 'rune', durCost: 0 }),
+  d(B.MYSTERY, 'mystery', 1, 0, ['#5a2d91', '#ffd23f', '#c77dff'], 'special', { special: 'mystery', durCost: 0 }),
+  d(B.SUPPLY, 'supply', 1, 0, ['#3f7a3a', '#9cff6b', '#24461f'], 'special', { special: 'supply', durCost: 0 }),
   d(B.CORE, 'core', 1, 0, ['#fff2a8', '#ff7ad9', '#ffffff'], 'special', { special: 'core', durCost: 0, blastable: false }),
 ];
 for (const def of defs) BLOCKS[def.id] = def;

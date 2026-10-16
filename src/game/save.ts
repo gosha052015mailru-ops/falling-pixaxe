@@ -212,7 +212,7 @@ export function newSave(): SaveData {
     hintEventsDone: false,
     pushAsked: false,
     dashDown: 0,
-    boosts: { giant: 0, twin: 0, teleport: 0, shield: 0, magnet: 0, meteor: 0 },
+    boosts: { giant: 0, twin: 0, teleport: 0, shield: 0, lightning: 0, blackhole: 0, rockets: 0, laser: 0, phantom: 0, magnet: 0, meteor: 0 },
     loadout: ['dynamite'],
     missions: freshMissions(),
     hintDownDone: false,
@@ -240,6 +240,10 @@ export function migrate(raw: unknown): SaveData {
   if (!Array.isArray(r.liftStops)) out.liftStops = [20, 100, 250, 450, 700].filter((d) => (r.bestDepth ?? 0) >= d);
   out.achievements = { ...(r.achievements ?? {}) };
   out.boosts = { ...base.boosts, ...(r.boosts ?? {}) };
+  // the five newer power-ups: a starter gift for players who already had power-ups unlocked
+  if (r.boosts && !('lightning' in r.boosts) && (r.level ?? 0) >= 4) {
+    for (const k of ['lightning', 'blackhole', 'rockets', 'laser', 'phantom'] as const) out.boosts[k] = 2;
+  }
   out.loadout = Array.isArray(r.loadout) ? r.loadout : base.loadout;
   out.missions = r.missions && Array.isArray(r.missions.list) ? { ...base.missions, ...r.missions } : base.missions;
   out.quests = r.quests && Array.isArray(r.quests.list) ? r.quests : base.quests;

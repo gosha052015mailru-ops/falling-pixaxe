@@ -24,8 +24,11 @@ export function applyResult(save: SaveData, r: RunResult, mult = 1, _now = Date.
   save.blocksBroken += r.blocks;
   save.dynamite = Math.max(0, save.dynamite - r.dynamiteUsed + r.dynamiteFound);
   save.totems = Math.max(0, save.totems - r.totemsUsed);
-  for (const [id, n] of Object.entries(r.boostsUsed)) {
-    if (id !== 'dynamite' && n) save.boosts[id as keyof SaveData['boosts']] = Math.max(0, save.boosts[id as keyof SaveData['boosts']] - n);
+  for (const id of new Set([...Object.keys(r.boostsUsed), ...Object.keys(r.boostsFound ?? {})])) {
+    if (id === 'dynamite') continue;
+    const k = id as keyof SaveData['boosts'];
+    // supply crates refill the stock: what was found and not used stays
+    save.boosts[k] = Math.max(0, (save.boosts[k] ?? 0) - (r.boostsUsed[k] ?? 0) + (r.boostsFound?.[k] ?? 0));
   }
   if (r.depth > save.bestDepth) save.bestDepth = r.depth;
   for (const m of r.newMilestones) if (!save.milestones.includes(m)) save.milestones.push(m);

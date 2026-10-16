@@ -235,6 +235,44 @@ function drawSpecial(ctx: CanvasRenderingContext2D, def: BlockDef): void {
       px(ctx, 13, 2, b);
       break;
     }
+    case 'mystery': {
+      // purple lucky block with a big golden "?"
+      fillNoise(ctx, base, shade(base, 0.1), def.id, 0.15);
+      ctx.fillStyle = b;
+      ctx.fillRect(0, 0, TEX, 1);
+      ctx.fillRect(0, 0, 1, TEX);
+      ctx.fillStyle = shade(base, -0.4);
+      ctx.fillRect(0, TEX - 1, TEX, 1);
+      ctx.fillRect(TEX - 1, 0, 1, TEX);
+      for (const [x, y] of [[2, 2], [13, 2], [2, 13], [13, 13]]) px(ctx, x, y, shade(a, -0.2));
+      ctx.fillStyle = shade(a, -0.45);
+      const q = [[5, 3, 6, 2], [10, 4, 2, 3], [8, 7, 3, 2], [7, 8, 2, 2], [7, 12, 2, 2]];
+      for (const [x, y, w, h] of q) ctx.fillRect(x + 1, y + 1, w, h);
+      ctx.fillStyle = a;
+      for (const [x, y, w, h] of q) ctx.fillRect(x, y, w, h);
+      ctx.fillRect(4, 4, 2, 2);
+      px(ctx, 6, 3, '#ffffff');
+      break;
+    }
+    case 'supply': {
+      // green supply crate with a white "+"
+      fillNoise(ctx, base, shade(base, -0.1), def.id, 0.2);
+      ctx.fillStyle = b;
+      ctx.fillRect(0, 0, TEX, 2);
+      ctx.fillRect(0, TEX - 2, TEX, 2);
+      ctx.fillRect(0, 0, 2, TEX);
+      ctx.fillRect(TEX - 2, 0, 2, TEX);
+      ctx.fillStyle = shade(base, 0.2);
+      ctx.fillRect(2, 2, TEX - 4, 1);
+      ctx.fillStyle = a;
+      ctx.fillRect(4, 7, 8, 2);
+      ctx.fillRect(7, 4, 2, 8);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(5, 7, 1, 1);
+      ctx.fillRect(7, 5, 1, 1);
+      for (const [x, y] of [[1, 1], [14, 1], [1, 14], [14, 14]]) px(ctx, x, y, '#c8c8d0');
+      break;
+    }
     default:
       fillNoise(ctx, base, a, def.id);
   }

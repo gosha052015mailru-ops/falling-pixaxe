@@ -18,6 +18,11 @@ const BOOST_FX_COLORS: Record<string, string[]> = {
   shield: ['#5ab0ff', '#bfe3ff', '#fff'],
   magnet: ['#ff3355', '#ffb3c1', '#fff'],
   meteor: ['#ff7a1a', '#ffd23f', '#fff'],
+  lightning: ['#9fe8ff', '#ffffff', '#5ab0ff'],
+  blackhole: ['#8b5cf6', '#e0ccff', '#1a0b33'],
+  rockets: ['#ff4f6d', '#ffd23f', '#fff'],
+  laser: ['#ff2e2e', '#ffb3b3', '#fff'],
+  phantom: ['#b8c4ff', '#dfe4ff', '#fff'],
 };
 /** How dark each biome of each world gets around the pickaxe's light. */
 const DARKNESS = [
@@ -56,6 +61,8 @@ export class Renderer {
   private pulls: { x0: number; y0: number; x: number; y: number; life: number }[] = [];
   /** Ice rift: a cold streak behind the plunging pickaxe. */
   private riftGlow = 0;
+  private zaps: { pts: [number, number][]; life: number }[] = [];
+  private lasers: { y: number; life: number }[] = [];
   /** Settings / adaptive quality. */
   maxDpr = 3;
   shakeEnabled = true;
@@ -198,6 +205,8 @@ export class Renderer {
         fx.burst(this.lastPickX, this.lastPickY, RAINBOW, 40, 9, 0.14, 4, true);
         break;
       case 'event':
+        if (e.id === 'quake') this.shake(0.6);
+        if (e.id === 'alchemy') this.doFlash('#ffd23f', 0.6);
         this.doFlash('#c77dff', 0.5);
         fx.ring(this.lastPickX, this.lastPickY, 3, '#e0b3ff');
         fx.burst(this.lastPickX, this.lastPickY, ['#c77dff', '#ffd23f', '#ffffff'], 45, 9, 0.14, 3, true);
@@ -268,6 +277,41 @@ export class Renderer {
         this.pulls.push({ x0: e.x0, y0: e.y0, x: e.x, y: e.y, life: 0.22 });
         fx.burst(e.x, e.y, ['#ff3355', '#ffb3c1', '#fff'], 6, 4, 0.1, 0, true);
         break;
+      case 'zap': {
+        // jagged lightning between the hit block and every block it jumped to
+        const pts: [number, number][] = [];
+        for (let i = 1; i < e.pts.length; i++) {
+          const [ax, ay] = e.pts[0];
+          const [bx, by] = e.pts[i];
+          pts.push([ax, ay]);
+          for (let k = 1; k < 4; k++) pts.push([ax + ((bx - ax) * k) / 4 + (Math.random() - 0.5) * 0.6, ay + ((by - ay) * k) / 4 + (Math.random() - 0.5) * 0.6]);
+          pts.push([bx, by], [NaN, NaN]);
+          fx.burst(bx, by, ['#9fe8ff', '#ffffff'], 6, 5, 0.1, 0, true);
+        }
+        this.zaps.push({ pts, life: 0.22 });
+        this.doFlash('#9fe8ff', 0.12);
+        this.shake(0.1);
+        break;
+      }
+      case 'laser':
+        this.lasers.push({ y: e.y, life: 0.25 });
+        fx.burst(this.lastPickX, e.y, ['#ff2e2e', '#ffb3b3', '#fff'], 10, 6, 0.1, 0, true);
+        this.shake(0.08);
+        break;
+      case 'starHit':
+        fx.burst(e.x, e.y, ['#fff6a8', '#ffd23f', '#ffffff'], 25, 9, 0.13, 3, true);
+        break;
+      case 'mystery':
+        fx.ring(e.x, e.y, 2.6, '#ffd23f');
+        fx.burst(e.x, e.y, ['#5a2d91', '#ffd23f', '#c77dff', '#fff'], 40, 9, 0.14, 2, true);
+        fx.text(e.x, e.y - 1, '?!', '#ffd23f', 0.8);
+        break;
+      case 'supply':
+        this.doFlash('#9cff6b', 0.35);
+        fx.ring(e.x, e.y, 2.4, '#9cff6b');
+        fx.burst(e.x, e.y, ['#3f7a3a', '#9cff6b', '#ffffff'], 40, 8, 0.14, 4, true);
+        fx.text(e.x, e.y - 1, e.ids.length ? `+1 ×${e.ids.length}` : '+$', '#9cff6b', 0.7);
+        break;
       case 'skid':
         fx.burst(e.x - e.dir * 0.3, e.y, ['#ffffff', '#d9f2ff', '#9fd8ff'], 5, 3, 0.09, 6);
         break;
@@ -306,6 +350,19 @@ export class Renderer {
     for (const p of this.portals) p.life -= dt;
     this.portals = this.portals.filter((p) => p.life > 0);
     if (this.beam && (this.beam.life -= dt) <= 0) this.beam = null;
+    for (const z of this.zaps) z.life -= dt;
+    this.zaps = this.zaps.filter((z) => z.life > 0);
+    for (const l of this.lasers) l.life -= dt;
+    this.lasers = this.lasers.filter((l) => l.life > 0);
+    if (run.chainTimer > 0 && Math.random() < 0.5) this.fx.burst(run.x, run.y, ['#ff8800', '#ffdd55'], 1, 3, 0.12, -4, true);
+    if (run.turboTimer > 0) this.fx.burst(run.x + (Math.random() - 0.5) * 0.6, run.y - 0.6, ['#6ff3f0', '#ffffff'], 1, 1, 0.09, -12, true);
+    if (run.lightningTimer > 0 && Math.random() < 0.3) this.fx.burst(run.x, run.y, ['#9fe8ff', '#fff'], 1, 4, 0.1, 0, true);
+    if (run.alchemyTimer > 0 && Math.random() < dt * 30) {
+      this.fx.burst(this.camX + Math.random() * this.viewW, this.camY + Math.random() * this.viewH, ['#ffd23f', '#fff6a8'], 1, 1, 0.1, -1, true);
+    }
+    for (const p of run.projectiles) {
+      if (p.delay <= 0) this.fx.burst(p.x, p.y, p.kind === 'star' ? ['#fff6a8', '#ffd23f'] : ['#ff8a1f', '#ffd23f', '#888'], 1, 1.5, 0.12, 0, true);
+    }
     for (const p of this.pulls) p.life -= dt;
     this.pulls = this.pulls.filter((p) => p.life > 0);
     this.riftGlow = Math.max(0, this.riftGlow - dt);
@@ -430,6 +487,96 @@ export class Renderer {
       ctx.stroke();
     }
 
+    // black hole: dark disc with a glowing swirling rim
+    if (run.hole) {
+      const hx = toX(run.hole.x);
+      const hy = toY(run.hole.y);
+      const R = run.hole.r * s;
+      const gr = ctx.createRadialGradient(hx, hy, R * 0.2, hx, hy, R * 1.25);
+      gr.addColorStop(0, 'rgba(5,0,15,0.95)');
+      gr.addColorStop(0.7, 'rgba(26,11,51,0.85)');
+      gr.addColorStop(0.85, 'rgba(139,92,246,0.7)');
+      gr.addColorStop(1, 'rgba(139,92,246,0)');
+      ctx.fillStyle = gr;
+      ctx.beginPath();
+      ctx.arc(hx, hy, R * 1.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.strokeStyle = 'rgba(224,204,255,0.8)';
+      ctx.lineWidth = Math.max(2, s * 0.08);
+      for (let i = 0; i < 3; i++) {
+        const a0 = this.time * 4 + (i * Math.PI * 2) / 3;
+        ctx.beginPath();
+        ctx.arc(hx, hy, R * (0.75 + 0.1 * i), a0, a0 + 1.4);
+        ctx.stroke();
+      }
+      ctx.restore();
+      if (Math.random() < 0.8) {
+        const a = Math.random() * Math.PI * 2;
+        this.fx.burst(run.hole.x + Math.cos(a) * run.hole.r * 1.4, run.hole.y + Math.sin(a) * run.hole.r * 1.4, ['#e0ccff', '#8b5cf6'], 1, 0.5, 0.1, 0, true);
+      }
+    }
+
+    // lasers: a bright red line across the shaft
+    for (const l of this.lasers) {
+      const a = l.life / 0.25;
+      const ly = toY(l.y);
+      const h = s * 0.5 * a;
+      const lg = ctx.createLinearGradient(0, ly - h, 0, ly + h);
+      lg.addColorStop(0, 'rgba(255,46,46,0)');
+      lg.addColorStop(0.5, `rgba(255,255,255,${0.95 * a})`);
+      lg.addColorStop(1, 'rgba(255,46,46,0)');
+      ctx.fillStyle = lg;
+      ctx.fillRect(0, ly - h, W, h * 2);
+    }
+
+    // lightning arcs
+    for (const z of this.zaps) {
+      const a = z.life / 0.22;
+      for (const [w, c] of [[0.18, `rgba(159,232,255,${0.6 * a})`], [0.06, `rgba(255,255,255,${a})`]] as const) {
+        ctx.strokeStyle = c;
+        ctx.lineWidth = Math.max(1.5, s * w);
+        ctx.beginPath();
+        let pen = false;
+        for (const [x, y] of z.pts) {
+          if (Number.isNaN(x)) {
+            pen = false;
+            continue;
+          }
+          if (pen) ctx.lineTo(toX(x), toY(y));
+          else ctx.moveTo(toX(x), toY(y));
+          pen = true;
+        }
+        ctx.stroke();
+      }
+    }
+
+    // rockets and falling stars
+    for (const p of run.projectiles) {
+      if (p.delay > 0) continue;
+      const x = toX(p.x);
+      const y = toY(p.y);
+      if (p.kind === 'star') {
+        const gr = ctx.createRadialGradient(x, y, 0, x, y, s * 0.7);
+        gr.addColorStop(0, 'rgba(255,255,255,1)');
+        gr.addColorStop(0.4, 'rgba(255,210,63,0.8)');
+        gr.addColorStop(1, 'rgba(255,210,63,0)');
+        ctx.fillStyle = gr;
+        ctx.fillRect(x - s * 0.7, y - s * 0.7, s * 1.4, s * 1.4);
+      } else {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(Math.atan2(p.vy, p.vx));
+        ctx.fillStyle = '#ff4f6d';
+        ctx.fillRect(-s * 0.3, -s * 0.1, s * 0.5, s * 0.2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(s * 0.2, -s * 0.07, s * 0.12, s * 0.14);
+        ctx.fillStyle = '#ffd23f';
+        ctx.fillRect(-s * 0.45, -s * 0.07, s * 0.15, s * 0.14);
+        ctx.restore();
+      }
+    }
+
     // pickaxe + motion trail
     const pick = tex.pickaxes[run.tier];
     if (!run.over || run.core) {
@@ -516,7 +663,17 @@ export class Renderer {
         ctx.fillStyle = tg;
         ctx.fillRect(px - s * 0.6, py - s * 5, s * 1.2, s * 5);
       }
+      if (run.phantomTimer > 0) {
+        // phantom: a pale ghost glow, the pickaxe itself half see-through
+        const gr = ctx.createRadialGradient(px, py, 0, px, py, s * 1.5);
+        gr.addColorStop(0, 'rgba(223,228,255,0.6)');
+        gr.addColorStop(1, 'rgba(184,196,255,0)');
+        ctx.fillStyle = gr;
+        ctx.fillRect(px - s * 1.5, py - s * 1.5, s * 3, s * 3);
+        ctx.globalAlpha = 0.55 + 0.15 * Math.sin(this.time * 20);
+      }
       this.drawPick(pick, px, py, run.angle, s, gv);
+      ctx.globalAlpha = 1;
       if (run.shieldTimer > 0) this.drawShield(toX(run.x), toY(run.y), run.shieldTimer, s * PICK_SIZE * this.pickScale * gv * 0.62);
     }
 

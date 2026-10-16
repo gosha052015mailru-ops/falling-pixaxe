@@ -38,7 +38,7 @@ export interface Reward {
 export function levelReward(save: SaveData, level: number): Reward {
   const r: Reward = { gems: 2 + Math.floor(level / 5), coins: Math.round(rewardScale(save) * 0.5) };
   // power-ups open with a starter pack so the first loadout is never empty
-  if (level === FEATURE_LEVEL.boosts) r.boosts = { giant: 2, twin: 2, teleport: 2, shield: 2 };
+  if (level === FEATURE_LEVEL.boosts) r.boosts = { giant: 2, twin: 2, teleport: 2, shield: 2, lightning: 1, rockets: 1 };
   return r;
 }
 

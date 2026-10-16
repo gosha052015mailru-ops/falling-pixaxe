@@ -259,7 +259,7 @@ describe('breakthrough down', () => {
 describe('power-ups', () => {
   const mk = (loadout: string[]) => {
     const s = newSave();
-    s.boosts = { giant: 2, twin: 2, teleport: 2, shield: 2, magnet: 0, meteor: 0 };
+    s.boosts = { giant: 2, twin: 2, teleport: 2, shield: 2, lightning: 0, blackhole: 0, rockets: 0, laser: 0, phantom: 0, magnet: 0, meteor: 0 };
     s.loadout = loadout as typeof s.loadout;
     const run = new Run({ seed: 9, stats: deriveStats(s), bestDepth: 0, milestones: [] });
     for (let y = 0; y < 80; y++) for (let x = 0; x < 9; x++) run.world.set(x, y, y < 6 ? B.AIR : B.STONE);
@@ -293,7 +293,7 @@ describe('power-ups', () => {
   it('used power-ups are taken from the stock', async () => {
     const { applyResult } = await import('../src/game/progress');
     const s = newSave();
-    s.boosts = { giant: 3, twin: 0, teleport: 0, shield: 0, magnet: 0, meteor: 0 };
+    s.boosts = { giant: 3, twin: 0, teleport: 0, shield: 0, lightning: 0, blackhole: 0, rockets: 0, laser: 0, phantom: 0, magnet: 0, meteor: 0 };
     s.loadout = ['giant'];
     const run = new Run({ seed: 9, stats: deriveStats(s), bestDepth: 0, milestones: [] });
     run.step(1 / 120);

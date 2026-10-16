@@ -52,6 +52,13 @@ const paths: Record<string, string> = {
   meteor: `<path d="M4 4l12 9M9 3l9 8M3 10l10 6" stroke="#ffb020" stroke-width="3.4" stroke-linecap="round"/><circle cx="20" cy="20" r="8" fill="#ff7a1a" ${SW}/><circle cx="18" cy="18" r="3" fill="#ffd23f"/><circle cx="23" cy="23" r="1.6" fill="#a83a10"/>`,
   world: `<circle cx="16" cy="16" r="12" fill="#3d7bff" ${SW}/><path d="M9 9c3 1 4 4 2 6s1 5 4 4 3 3 3 5M20 6c-1 3 2 4 4 4M26 18c-2 0-4 1-4 3" fill="none" stroke="#7ccf4a" stroke-width="3.2" stroke-linecap="round"/><circle cx="12" cy="11" r="2" fill="#fff6"/>`,
   chevron: `<path d="M8 20l8-8 8 8" fill="none" stroke="${O}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 20l8-8 8 8" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>`,
+  lightning: `<path d="M19 2L8 16h7l-4 14 13-17h-7l4-11z" fill="#9fe8ff" ${SW}/><path d="M17 6l-4 6" stroke="#fff" stroke-width="2" stroke-linecap="round"/><path d="M4 22l3-2M26 6l3-2" stroke="#9fe8ff" stroke-width="2.4" stroke-linecap="round"/>`,
+  blackhole: `<circle cx="16" cy="16" r="13" fill="#8b5cf6" ${SW}/><path d="M16 5a11 11 0 0 1 11 11M16 27A11 11 0 0 1 5 16" fill="none" stroke="#e0ccff" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="16" r="6" fill="#0b0614" stroke="#c9a6ff" stroke-width="2"/>`,
+  rockets: `<path d="M18 3c6 0 11 5 11 11l-8 6-9-9z" fill="#ff4f6d" ${SW}/><path d="M12 11l-5 1-4 5 6 0M21 20l-1 5-5 4 0-6" fill="#ffd23f" ${SW}/><circle cx="21" cy="11" r="2.6" fill="#9fe8ff" ${SW}/><path d="M10 22l-6 6M7 19l-4 3M13 25l-3 4" stroke="#ff8a1f" stroke-width="2.6" stroke-linecap="round"/>`,
+  laser: `<rect x="3" y="13" width="26" height="6" rx="3" fill="#ff2e2e" ${SW}/><path d="M5 16h22" stroke="#fff" stroke-width="2" stroke-linecap="round"/><path d="M7 7l3 4M16 4v6M25 7l-3 4M7 25l3-4M16 28v-6M25 25l-3-4" stroke="#ff8a8a" stroke-width="2.4" stroke-linecap="round"/>`,
+  phantom: `<g opacity=".5"><path d="M5 9c6-6 16-6 22 0-6-2-16-2-22 0z" fill="#b8c4ff" ${SW}/></g><path d="M5 14c6-6 16-6 22 0-6-2-16-2-22 0z" fill="#dfe4ff" ${SW}/><path d="M15 13h3l-2 16h-2z" fill="#b8c4ff" ${SW}/><path d="M4 21h5M23 24h5M3 27h4" stroke="#b8c4ff" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="2 2"/>`,
+  mystery: `<rect x="4" y="4" width="24" height="24" rx="4" fill="#5a2d91" ${SW}/><path d="M12 12a4 4 0 1 1 6 3.4c-1.4.8-2 1.6-2 3.1" fill="none" stroke="#ffd23f" stroke-width="3.4" stroke-linecap="round"/><circle cx="16" cy="23" r="2" fill="#ffd23f"/>`,
+  supply: `<rect x="4" y="6" width="24" height="21" rx="2" fill="#3f7a3a" ${SW}/><path d="M16 10v13M9.5 16.5h13" stroke="#9cff6b" stroke-width="4" stroke-linecap="round"/><path d="M4 11h24" stroke="${O}" stroke-width="2"/>`,
   sparkle: `<path d="M16 3l3 10 10 3-10 3-3 10-3-10-10-3 10-3z" fill="#fff6a8" ${SW}/>`,
 };
 
@@ -70,4 +77,4 @@ export const UPGRADE_ICON: Record<string, string> = {
   weight: 'weight',
 };
 
-export const BOOST_ICON: Record<string, string> = { dynamite: 'bomb', giant: 'giant', twin: 'twin', teleport: 'teleport', shield: 'shield', magnet: 'magnet', meteor: 'meteor' };
+export const BOOST_ICON: Record<string, string> = { dynamite: 'bomb', giant: 'giant', twin: 'twin', teleport: 'teleport', shield: 'shield', magnet: 'magnet', meteor: 'meteor', lightning: 'lightning', blackhole: 'blackhole', rockets: 'rockets', laser: 'laser', phantom: 'phantom' };

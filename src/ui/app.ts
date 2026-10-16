@@ -11,7 +11,7 @@ const WORLD_THEMES: ThemeId[][] = [
 import { sfx } from '../audio/sfx';
 import { blockDef } from '../game/blocks';
 import { Bot } from '../game/bot';
-import { BOOSTS, FAST_FORWARD, PHYS, RUNES, TIERS, WORLDS, biomeIndex, biomesOf, type BoostId } from '../game/config';
+import { BOOSTS, FAST_FORWARD, MINE_EVENTS, PHYS, RUNES, TIERS, WORLDS, biomeIndex, biomesOf, type BoostId } from '../game/config';
 import { addCoins, deriveStats } from '../game/economy';
 import { missionsReachedLive, progressMissions, runMetrics, unlocked, type MissionDone } from '../game/meta';
 import { addPlayTime, eventGoalFor, recordRun, startSession, userProperties } from '../game/profile';
@@ -37,13 +37,14 @@ const MAX_STEPS = 36;
 /** Background longer than this starts a new analytics session (industry default: 30 min). */
 const SESSION_TIMEOUT = 30 * 60_000;
 const BANNER_GAP = 4;
-const BOOST_COLOR: Record<BoostId, string> = { dynamite: '#ff6a3d', giant: '#ffb020', twin: '#6ff3f0', teleport: '#c77dff', shield: '#5ab0ff', magnet: '#ff3355', meteor: '#ff7a1a' };
+const BOOST_COLOR: Record<BoostId, string> = { dynamite: '#ff6a3d', giant: '#ffb020', twin: '#6ff3f0', teleport: '#c77dff', shield: '#5ab0ff', magnet: '#ff3355', meteor: '#ff7a1a', lightning: '#9fe8ff', blackhole: '#8b5cf6', rockets: '#ff4f6d', laser: '#ff2e2e', phantom: '#b8c4ff' };
 
 export class App {
   save: SaveData = loadSave();
   renderer: Renderer;
   run!: Run;
   bot: Bot | null = null;
+  private lastBoom = 0;
   mode: Mode = 'menu';
   screen: ScreenId = 'home';
   result: RunResult | null = null;
@@ -581,10 +582,16 @@ export class App {
       case 'bounce':
         sfx.bounce();
         break;
-      case 'explode':
-        sfx.explode();
-        vibrate('heavy');
+      case 'explode': {
+        // chain reactions and starfall can blow up many times a second: keep the ears intact
+        const now = performance.now();
+        if (now - this.lastBoom > 70) {
+          this.lastBoom = now;
+          sfx.explode();
+          vibrate('heavy');
+        }
         break;
+      }
       case 'tierUp':
         sfx.tierUp();
         vibrate('heavy');
@@ -715,6 +722,23 @@ export class App {
         if (e.id !== 'twin' && e.id !== 'teleport') sfx.nudge();
         break;
       case 'twinPoof':
+        break;
+      case 'zap':
+        sfx.dash(0.3);
+        break;
+      case 'laser':
+        sfx.sizzle();
+        break;
+      case 'mystery':
+        sfx.rare();
+        break;
+      case 'supply':
+        sfx.chest();
+        vibrate('medium');
+        this.banner(
+          `${icon('supply', 54)}<div class="t">${t('supply')}</div><div class="s">${e.ids.length ? e.ids.map((id) => icon(BOOST_ICON[id], 22)).join('') + ' +1' : t('supplyNone')}</div>`,
+          '#3f7a3a',
+        );
         break;
       case 'event':
         sfx.fanfare();
@@ -893,6 +917,12 @@ export class App {
       if (v > 0) buffs.push(`<span class="buff" style="--c:#6a35c2">${icon('sparkle', 20)}${t(`ench.${k}`).split(':')[0]}${v > 1 ? ' x' + v : ''}</span>`);
     }
     if (r.mightTimer > 0) buffs.push(`<span class="buff" style="--c:#c2402a">${icon('hammer', 20)}x${RUNES.might} ${Math.ceil(r.mightTimer)}</span>`);
+    if (r.lightningTimer > 0) buffs.push(`<span class="buff" style="--c:#2a78a8">${icon('lightning', 20)}${Math.ceil(r.lightningTimer)}</span>`);
+    if (r.laserTimer > 0) buffs.push(`<span class="buff" style="--c:#b81e1e">${icon('laser', 20)}${Math.ceil(r.laserTimer)}</span>`);
+    if (r.phantomTimer > 0) buffs.push(`<span class="buff" style="--c:#5a63a8">${icon('phantom', 20)}${Math.ceil(r.phantomTimer)}</span>`);
+    if (r.turboTimer > 0) buffs.push(`<span class="buff" style="--c:#1f8f8c">${icon('arrows', 20)}x${MINE_EVENTS.turboSpeed} ${Math.ceil(r.turboTimer)}</span>`);
+    if (r.chainTimer > 0) buffs.push(`<span class="buff" style="--c:#c25a12">${icon('bomb', 20)}${Math.ceil(r.chainTimer)}</span>`);
+    if (r.alchemyTimer > 0) buffs.push(`<span class="buff" style="--c:#b88a00">${icon('sparkle', 20)}${Math.ceil(r.alchemyTimer)}</span>`);
     if (r.totems > 0) buffs.push(`<span class="buff" style="--c:#8a6a1a">${icon('totem', 20)}</span>`);
     const bh = buffs.join('');
     if (bh !== h.buffs) {

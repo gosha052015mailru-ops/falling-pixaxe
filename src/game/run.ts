@@ -24,7 +24,21 @@ import { Rng } from './rng';
 import { World } from './world';
 
 export type ChestLoot = 'coins' | 'gems' | 'dynamite' | 'durability';
-export type BreakCause = 'pick' | 'blast' | 'twin' | 'magnet';
+export type BreakCause = 'pick' | 'blast' | 'twin' | 'magnet' | 'zap' | 'hole' | 'laser' | 'phantom';
+
+/** A homing rocket (power-up) or a falling star (event): flies to a cell and blows up. */
+export interface Projectile {
+  kind: 'rocket' | 'star';
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  tx: number;
+  ty: number;
+  /** Seconds before it appears. */
+  delay: number;
+  age: number;
+}
 
 /** A ghost pickaxe split off by the Twin power-up: mines on its own, never wears. */
 export interface Twin {
@@ -69,7 +83,12 @@ export type GameEvent =
   | { t: 'rift'; x: number; y: number }
   | { t: 'rune'; id: RuneId; x: number; y: number }
   | { t: 'magnet'; x0: number; y0: number; x: number; y: number }
-  | { t: 'skid'; x: number; y: number; dir: number };
+  | { t: 'skid'; x: number; y: number; dir: number }
+  | { t: 'zap'; pts: [number, number][] }
+  | { t: 'laser'; y: number }
+  | { t: 'supply'; ids: BoostId[]; x: number; y: number }
+  | { t: 'mystery'; x: number; y: number }
+  | { t: 'starHit'; x: number; y: number };
 
 export interface RunInit {
   seed: number;
@@ -118,8 +137,12 @@ export interface RunResult {
   crits: number;
   rifts: number;
   runes: number;
+  mysteries: number;
+  supplies: number;
   oreCounts: Record<string, number>;
   boostsUsed: Partial<Record<BoostId, number>>;
+  /** Power-ups found in supply crates (kept if not used). */
+  boostsFound: Partial<Record<BoostId, number>>;
 }
 
 interface PendingBlast {
@@ -128,6 +151,8 @@ interface PendingBlast {
   r: number;
   t: number;
   chain: number;
+  /** Does it push the pickaxe? (chain-reaction pops and rockets don't) */
+  push: boolean;
 }
 
 export class Run {
@@ -196,6 +221,8 @@ export class Run {
   crits = 0;
   rifts = 0;
   runes = 0;
+  mysteries = 0;
+  supplies = 0;
   oreCounts: Record<string, number> = {};
 
   /** Power-ups brought into this run (dynamite lives in `dynamite`). */
@@ -209,6 +236,22 @@ export class Run {
   meteorTimer = 0;
   /** Rune of Might: extra damage while > 0. */
   mightTimer = 0;
+  boostsFound: Partial<Record<BoostId, number>> = {};
+  lightningTimer = 0;
+  private zapCd = 0;
+  /** Black hole: a fixed point in the rock that grows and swallows blocks. */
+  hole: { x: number; y: number; r: number; t: number } | null = null;
+  private holeTick = 0;
+  laserTimer = 0;
+  private laserTick = 0;
+  phantomTimer = 0;
+  projectiles: Projectile[] = [];
+  // big mine events
+  alchemyTimer = 0;
+  /** Cells turned into ore by Alchemy: key → [original block, ore it became]. */
+  private alchemyCells = new Map<string, [B, B]>();
+  turboTimer = 0;
+  chainTimer = 0;
   private magnetTick = 0;
   private bouncesSinceBreak = 0;
 
@@ -290,11 +333,19 @@ export class Run {
     return base > 0 ? Math.max(MINE_EVENTS.goalMin, Math.round(base * this.rng.range(0.75, 1.25))) : 0;
   }
 
-  private fireEvent(x: number, y: number): void {
+  private fireEvent(y: number): void {
     this.eventProgress = 0;
     this.eventGoal = this.rollEventGoal();
+    this.startEvent(this.rollEvent(MINE_EVENTS.weights), y);
+  }
+
+  private rollEvent(weights: Partial<Record<MineEventId, number>>): MineEventId {
+    return this.rng.weighted((Object.keys(weights) as MineEventId[]).map((item) => ({ item, w: weights[item] ?? 0 })));
+  }
+
+  /** Start a mine event right now (the meter, a "?" block or a test). */
+  startEvent(id: MineEventId, y = Math.floor(this.y)): void {
     this.eventsFired++;
-    const id = this.rng.weighted((Object.keys(MINE_EVENTS.weights) as MineEventId[]).map((item) => ({ item, w: MINE_EVENTS.weights[item] })));
     const px = Math.floor(this.x);
     const py = Math.max(y, Math.floor(this.y));
     const w = this.world;
@@ -336,10 +387,62 @@ export class Run {
         for (const dx of [-1, 1]) if (!w.isWall(px + dx)) w.set(px + dx, py + 3, B.CHEST);
         w.set(px, py + 4, B.CHEST);
         break;
+      case 'alchemy':
+        this.startAlchemy(py);
+        break;
+      case 'turbo':
+        this.turboTimer = MINE_EVENTS.turboTime;
+        break;
+      case 'quake':
+        for (let cy = py + 2; cy <= py + MINE_EVENTS.quakeRows; cy++) {
+          for (let cx = 0; cx < w.width; cx++) {
+            const d = blockDef(w.get(cx, cy));
+            if (solidHere(cx, cy) && d.blastable && this.rng.chance(MINE_EVENTS.quakeShare)) this.breakBlock(cx, cy, 'blast', false);
+          }
+        }
+        break;
+      case 'starfall':
+        for (let i = 0; i < MINE_EVENTS.starCount; i++) {
+          const tx = this.rng.int(0, w.width - 1);
+          const ty = py + this.rng.int(2, 10);
+          const sx = tx + this.rng.range(-3, 3);
+          this.projectiles.push({ kind: 'star', x: sx + 0.5, y: py - 9, vx: 0, vy: 0, tx, ty, delay: (i / MINE_EVENTS.starCount) * MINE_EVENTS.starTime, age: 0 });
+        }
+        break;
+      case 'chain':
+        this.chainTimer = MINE_EVENTS.chainTime;
+        break;
     }
-    void x;
     this.slow(0.4, 0.5);
     this.emit({ t: 'event', id });
+  }
+
+  /** Alchemy: every rock around turns into ore of its biome; what is left turns back later. */
+  private startAlchemy(py: number): void {
+    this.endAlchemy();
+    const w = this.world;
+    for (let cy = Math.max(w.startDepth, py + MINE_EVENTS.alchemyRows[0]); cy <= py + MINE_EVENTS.alchemyRows[1]; cy++) {
+      if (cy >= w.endDepth) break;
+      const ores = biomeAt(cy, this.worldIdx).ores;
+      for (let cx = 0; cx < w.width; cx++) {
+        const id = w.get(cx, cy);
+        const d = blockDef(id);
+        if (!d.solid || d.special || d.ore || !Number.isFinite(d.hp)) continue;
+        const ore = this.rng.weighted(ores);
+        w.set(cx, cy, ore);
+        this.alchemyCells.set(`${cx},${cy}`, [id, ore]);
+      }
+    }
+    this.alchemyTimer = MINE_EVENTS.alchemyTime;
+  }
+
+  private endAlchemy(): void {
+    for (const [k, [orig, ore]] of this.alchemyCells) {
+      const [cx, cy] = k.split(',').map(Number);
+      if (this.world.get(cx, cy) === ore) this.world.set(cx, cy, orig);
+    }
+    this.alchemyCells.clear();
+    this.alchemyTimer = 0;
   }
 
   get fever(): boolean {
@@ -496,6 +599,14 @@ export class Run {
         return this.magnetTimer;
       case 'meteor':
         return this.meteorTimer;
+      case 'lightning':
+        return this.lightningTimer;
+      case 'blackhole':
+        return this.hole?.t ?? 0;
+      case 'laser':
+        return this.laserTimer;
+      case 'phantom':
+        return this.phantomTimer;
       default:
         return 0;
     }
@@ -537,8 +648,213 @@ export class Run {
         this.x = Math.floor(this.x) + 0.5;
         this.slow(0.3, 0.4);
         break;
+      case 'lightning':
+        this.lightningTimer = time;
+        this.zapCd = 0;
+        break;
+      case 'blackhole':
+        this.hole = { x: this.x, y: this.y + BOOST_FX.holeDrop, r: BOOST_FX.holeR[0], t: time };
+        this.holeTick = 0;
+        this.slow(0.3, 0.45);
+        break;
+      case 'rockets':
+        this.fireRockets();
+        break;
+      case 'laser':
+        this.laserTimer = time;
+        this.laserTick = 0;
+        break;
+      case 'phantom':
+        this.endDash();
+        this.phantomTimer = time;
+        this.vy = BOOST_FX.phantomSpeed;
+        break;
     }
     return true;
+  }
+
+  /** Can this block be smashed by a power-up (rock and specials, never bedrock or the Core)? */
+  private smashable(cx: number, cy: number, unblastable = false): boolean {
+    if (this.world.isWall(cx)) return false;
+    const id = this.world.get(cx, cy);
+    if (id === B.CORE) return false;
+    const d = blockDef(id);
+    if (!d.solid) return false;
+    if (d.special) return d.blastable;
+    return Number.isFinite(d.hp) && (unblastable || d.blastable);
+  }
+
+  /** Lightning: the hit block arcs into nearby blocks of the same kind (or ore) and breaks them. */
+  private zap(cx: number, cy: number, id: B): void {
+    if (this.zapCd > 0) return;
+    this.zapCd = 0.12;
+    const reach = BOOST_FX.lightningReach;
+    const cand: [number, number, number][] = [];
+    for (let y = cy - reach; y <= cy + reach; y++) {
+      for (let x = cx - reach; x <= cx + reach; x++) {
+        if ((x === cx && y === cy) || !this.smashable(x, y)) continue;
+        const other = this.world.get(x, y);
+        const d = blockDef(other);
+        if (d.special || (other !== id && !d.ore)) continue;
+        cand.push([x, y, Math.hypot(x - cx, y - cy) - (d.ore ? 1.5 : 0)]);
+      }
+    }
+    cand.sort((a, b) => a[2] - b[2]);
+    const hit = cand.slice(0, BOOST_FX.lightningChain);
+    if (!hit.length) return;
+    const pts: [number, number][] = [[cx + 0.5, cy + 0.5]];
+    for (const [x, y] of hit) {
+      pts.push([x + 0.5, y + 0.5]);
+      this.breakBlock(x, y, 'zap', false);
+    }
+    this.emit({ t: 'zap', pts });
+  }
+
+  private updateHole(dt: number): void {
+    const h = this.hole!;
+    h.t -= dt;
+    const total = BOOSTS.blackhole.time ?? 3.5;
+    const k = Math.min(1, 1 - h.t / total);
+    h.r = BOOST_FX.holeR[0] + (BOOST_FX.holeR[1] - BOOST_FX.holeR[0]) * Math.min(1, k * 1.6);
+    // the pickaxe is pulled in a little
+    this.vx += (h.x - this.x) * 3 * dt;
+    if ((this.holeTick -= dt) <= 0) {
+      this.holeTick = BOOST_FX.holeEvery;
+      for (let cy = Math.floor(h.y - h.r); cy <= Math.floor(h.y + h.r); cy++) {
+        for (let cx = Math.floor(h.x - h.r); cx <= Math.floor(h.x + h.r); cx++) {
+          if (Math.hypot(cx + 0.5 - h.x, cy + 0.5 - h.y) <= h.r && this.smashable(cx, cy, true)) this.breakBlock(cx, cy, 'hole', false);
+          if (this.over) return;
+        }
+      }
+    }
+    if (h.t <= 0) {
+      this.hole = null;
+      this.emit({ t: 'boostEnd', id: 'blackhole' });
+    }
+  }
+
+  /** Laser: the whole row right under the pickaxe is cut, again and again. */
+  private updateLaser(dt: number): void {
+    if ((this.laserTick -= dt) > 0) return;
+    this.laserTick = BOOST_FX.laserEvery;
+    // the first row under the pickaxe that still has rock in it
+    let row = Math.floor(this.y + this.radius);
+    for (let i = 0; i < 3 && ![...Array(this.world.width).keys()].some((cx) => this.smashable(cx, row)); i++) row++;
+    let cut = 0;
+    for (let cx = 0; cx < this.world.width && !this.over; cx++) {
+      if (this.smashable(cx, row)) {
+        this.breakBlock(cx, row, 'laser', false);
+        cut++;
+      }
+    }
+    if (cut) this.emit({ t: 'laser', y: row + 0.5 });
+  }
+
+  /** Rockets: one per most valuable block below (ores and specials first). */
+  private fireRockets(): void {
+    const top = Math.floor(this.y) + 1;
+    const cells: [number, number, number][] = [];
+    for (let cy = top; cy <= top + BOOST_FX.rocketRows; cy++) {
+      for (let cx = 0; cx < this.world.width; cx++) {
+        if (!this.smashable(cx, cy)) continue;
+        const id = this.world.get(cx, cy);
+        const d = blockDef(id);
+        const score = d.special ? 1e6 : d.ore ? 1000 + this.blockValue(id, cy) : this.rng.next();
+        cells.push([cx, cy, score]);
+      }
+    }
+    cells.sort((a, b) => b[2] - a[2]);
+    const picked: [number, number][] = [];
+    for (const [x, y] of cells) {
+      if (picked.length >= BOOST_FX.rocketCount) break;
+      if (picked.some(([px, py]) => Math.abs(px - x) <= 1 && Math.abs(py - y) <= 1)) continue;
+      picked.push([x, y]);
+    }
+    picked.forEach(([tx, ty], i) => {
+      const a = -Math.PI / 2 + (i - (picked.length - 1) / 2) * 0.5;
+      this.projectiles.push({ kind: 'rocket', x: this.x, y: this.y - 0.3, vx: Math.cos(a) * 7, vy: Math.sin(a) * 7, tx, ty, delay: i * 0.08, age: 0 });
+    });
+  }
+
+  private updateProjectiles(dt: number): void {
+    for (const p of this.projectiles) {
+      if (p.delay > 0) {
+        p.delay -= dt;
+        continue;
+      }
+      p.age += dt;
+      const dx = p.tx + 0.5 - p.x;
+      const dy = p.ty + 0.5 - p.y;
+      const d = Math.hypot(dx, dy);
+      const speed = p.kind === 'star' ? 24 : BOOST_FX.rocketSpeed;
+      if (d < 0.45 || p.age > 2) {
+        p.age = -1;
+        const r = p.kind === 'star' ? MINE_EVENTS.starBlast : BOOST_FX.rocketBlast;
+        if (p.kind === 'star') this.emit({ t: 'starHit', x: p.tx + 0.5, y: p.ty + 0.5 });
+        this.explode(p.tx + 0.5, p.ty + 0.5, r, 0, false);
+        if (this.over) return;
+        continue;
+      }
+      // homing: steer the velocity toward the target
+      const k = Math.min(1, dt * (p.kind === 'star' ? 20 : 7));
+      p.vx += ((dx / d) * speed - p.vx) * k;
+      p.vy += ((dy / d) * speed - p.vy) * k;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+    }
+    this.projectiles = this.projectiles.filter((p) => p.age >= 0);
+  }
+
+  /** Phantom: fall through the rock; only ores and specials on the way are taken. */
+  private phantomStep(h: number): void {
+    this.vx *= Math.exp(-3 * h);
+    this.vy = BOOST_FX.phantomSpeed;
+    this.x = Math.max(this.radius, Math.min(this.world.width - this.radius, this.x + this.vx * h));
+    this.y += this.vy * h;
+    const cx = Math.floor(this.x);
+    for (let cy = Math.floor(this.y - 0.3); cy <= Math.floor(this.y + 0.3); cy++) {
+      const id = this.world.get(cx, cy);
+      const d = blockDef(id);
+      if (d.ore || d.special) this.breakBlock(cx, cy, 'phantom', false);
+      if (this.over) return;
+    }
+  }
+
+  /** Phantom ends: carve out the rock the pickaxe is stuck in. */
+  private endPhantom(): void {
+    this.phantomTimer = 0;
+    const r = this.radius;
+    for (let cy = Math.floor(this.y - r); cy <= Math.floor(this.y + r); cy++) {
+      for (let cx = Math.floor(this.x - r); cx <= Math.floor(this.x + r); cx++) {
+        if (this.smashable(cx, cy, true)) this.breakBlock(cx, cy, 'phantom', false);
+      }
+    }
+    // never stay inside bedrock
+    while (this.y > 0 && blockDef(this.world.get(Math.floor(this.x), Math.floor(this.y))).solid && !this.world.isWall(Math.floor(this.x))) this.y -= 1;
+    this.vy = Math.min(this.vy, 4);
+    this.emit({ t: 'boostEnd', id: 'phantom' });
+  }
+
+  /** Supply crate: +1 of every power-up in the loadout (kept after the run if unused). */
+  private openSupply(x: number, y: number): void {
+    this.supplies++;
+    const ids: BoostId[] = [];
+    const add = (id: BoostId) => {
+      ids.push(id);
+      this.boostsFound[id] = (this.boostsFound[id] ?? 0) + 1;
+    };
+    if ((this.stats.loadout ?? []).includes('dynamite')) {
+      this.dynamite++;
+      this.dynamiteFound++;
+      add('dynamite');
+    }
+    for (const id of Object.keys(this.boosts) as BoostId[]) {
+      this.boosts[id] = (this.boosts[id] ?? 0) + 1;
+      add(id);
+    }
+    if (!ids.length) this.bonusCoins += this.blockValue(B.STONE, y) * 15;
+    this.slow(0.35, 0.45);
+    this.emit({ t: 'supply', ids, x: x + 0.5, y: y + 0.5 });
   }
 
   /** Ice rift: a free straight plunge that smashes everything blastable on the way. */
@@ -668,6 +984,13 @@ export class Run {
       this.vy = Math.min(this.vy, 4);
       this.emit({ t: 'boostEnd', id: 'meteor' });
     }
+    if (this.zapCd > 0) this.zapCd -= dt;
+    if (this.lightningTimer > 0 && (this.lightningTimer -= dt) <= 0) this.emit({ t: 'boostEnd', id: 'lightning' });
+    if (this.laserTimer > 0 && (this.laserTimer -= dt) <= 0) this.emit({ t: 'boostEnd', id: 'laser' });
+    if (this.phantomTimer > 0 && (this.phantomTimer -= dt) <= 0) this.endPhantom();
+    if (this.alchemyTimer > 0 && (this.alchemyTimer -= dt) <= 0) this.endAlchemy();
+    if (this.turboTimer > 0) this.turboTimer -= dt;
+    if (this.chainTimer > 0) this.chainTimer -= dt;
     if (this.nudges < this.stats.nudgeCharges) {
       this.nudgeTimer += dt;
       if (this.nudgeTimer >= this.stats.nudgeRegen) {
@@ -679,13 +1002,17 @@ export class Run {
     this.updateBlasts(dt);
     if (this.over) return;
 
-    // physics with sub-steps so we never tunnel through a block
-    const speed = Math.hypot(this.vx, this.vy) + PHYS.gravity * dt;
-    const steps = Math.max(1, Math.ceil((speed * dt) / PHYS.maxStep));
-    const h = dt / steps;
+    // physics with sub-steps so we never tunnel through a block; Turbo runs the pickaxe faster
+    const pdt = dt * (this.turboTimer > 0 ? MINE_EVENTS.turboSpeed : 1);
+    const speed = Math.hypot(this.vx, this.vy) + PHYS.gravity * pdt;
+    const steps = Math.max(1, Math.ceil((speed * pdt) / PHYS.maxStep));
+    const h = pdt / steps;
     for (let i = 0; i < steps && !this.over; i++) this.substep(h);
     if (this.twins.length) this.updateTwins(dt);
     if (this.magnetTimer > 0 && !this.over) this.updateMagnet(dt);
+    if (this.hole && !this.over) this.updateHole(dt);
+    if (this.laserTimer > 0 && !this.over) this.updateLaser(dt);
+    if (this.projectiles.length && !this.over) this.updateProjectiles(dt);
 
     this.angle += this.angVel * dt;
     this.angVel *= Math.exp(-0.8 * dt);
@@ -696,6 +1023,10 @@ export class Run {
   }
 
   private substep(h: number): void {
+    if (this.phantomTimer > 0) {
+      this.phantomStep(h);
+      return;
+    }
     if (this.meteorTimer > 0) this.meteorStep(h);
     if (this.over) return;
     if (this.meteorTimer > 0) {
@@ -845,6 +1176,7 @@ export class Run {
     this.spendDurability(def.durCost);
 
     this.sideSwing(cx, cy, dmg);
+    if (this.lightningTimer > 0) this.zap(cx, cy, id);
 
     if (Number.isFinite(before) && this.world.damage(cx, cy, dmg)) {
       const keep = dmg >= before * 2 ? PHYS.pierceKeep : PHYS.breakKeep;
@@ -967,7 +1299,7 @@ export class Run {
       this.oreCount++;
       this.oreCounts[def.key] = (this.oreCounts[def.key] ?? 0) + 1;
     }
-    if (this.eventGoal > 0 && ++this.eventProgress >= this.eventGoal) this.fireEvent(x, y);
+    if (this.eventGoal > 0 && ++this.eventProgress >= this.eventGoal) this.fireEvent(y);
 
     const coins = this.blockValue(id, y) * this.comboMult;
     this.oreCoins += coins;
@@ -977,6 +1309,9 @@ export class Run {
 
     if (def.special) this.triggerSpecial(def.special, x, y, cause);
 
+    if (this.chainTimer > 0 && (cause === 'pick' || cause === 'twin' || cause === 'zap')) {
+      this.queueBlast(x + 0.5, y + 0.5, MINE_EVENTS.chainBlast, 0.06, 0, false);
+    }
     if (cause === 'pick') {
       this.pickBreaks++;
       if (this.enchants.explosive > 0 && this.pickBreaks % RUN.explosiveEvery === 0) {
@@ -1067,6 +1402,14 @@ export class Run {
         this.emit({ t: 'core' });
         break;
       }
+      case 'mystery':
+        this.mysteries++;
+        this.emit({ t: 'mystery', x: x + 0.5, y: y + 0.5 });
+        this.startEvent(this.rollEvent(MINE_EVENTS.mysteryWeights), y);
+        break;
+      case 'supply':
+        this.openSupply(x, y);
+        break;
       case 'slime':
         break;
     }
@@ -1102,8 +1445,8 @@ export class Run {
 
   // ───────────────────────── explosions ─────────────────────────
 
-  private queueBlast(x: number, y: number, r: number, fuse: number, chain: number): void {
-    this.blasts.push({ x, y, r, t: fuse, chain });
+  private queueBlast(x: number, y: number, r: number, fuse: number, chain: number, push = true): void {
+    this.blasts.push({ x, y, r, t: fuse, chain, push });
   }
 
   private updateBlasts(dt: number): void {
@@ -1117,10 +1460,10 @@ export class Run {
       }
       return true;
     });
-    for (const b of ready) this.explode(b.x, b.y, b.r, b.chain);
+    for (const b of ready) this.explode(b.x, b.y, b.r, b.chain, b.push);
   }
 
-  private explode(ex: number, ey: number, r: number, chain: number): void {
+  private explode(ex: number, ey: number, r: number, chain: number, push = true): void {
     this.emit({ t: 'explode', x: ex, y: ey, r, chain });
     const x0 = Math.floor(ex - r);
     const x1 = Math.floor(ex + r);
@@ -1147,7 +1490,7 @@ export class Run {
     const dy = this.y - ey;
     const d = Math.hypot(dx, dy);
     const reach = r * 1.6;
-    if (d < reach) {
+    if (push && d < reach) {
       const k = 9 * (1 - d / reach);
       const nx = d > 0.1 ? dx / d : this.rng.range(-0.5, 0.5);
       const ny = d > 0.1 ? dy / d : -1;
@@ -1215,7 +1558,7 @@ export class Run {
       this.lavaTimer = 0;
       return;
     }
-    if (TIERS[this.tier].fireproof || this.enchants.fireproof > 0 || this.shieldTimer > 0) return;
+    if (TIERS[this.tier].fireproof || this.enchants.fireproof > 0 || this.shieldTimer > 0 || this.phantomTimer > 0) return;
     this.lavaTimer += dt;
     if (this.lavaTimer >= RUN.lavaTick) {
       this.lavaTimer = 0;
@@ -1279,6 +1622,9 @@ export class Run {
       crits: this.crits,
       rifts: this.rifts,
       runes: this.runes,
+      mysteries: this.mysteries,
+      supplies: this.supplies,
+      boostsFound: { ...this.boostsFound },
       oreCounts: { ...this.oreCounts },
       boostsUsed: { ...this.boostsUsed },
     };

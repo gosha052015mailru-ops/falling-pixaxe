@@ -45,7 +45,7 @@ for (let i = 1; i <= maxRuns; i++) {
   if (save.level >= FEATURE_LEVEL.boosts && !noBoosts) {
     save.loadout = [...BOOST_IDS].filter((id) => boostAvailable(save, id)).sort((a, b) => (b === 'dynamite' ? save.dynamite : save.boosts[b]) - (a === 'dynamite' ? save.dynamite : save.boosts[a])).slice(0, 3);
   }
-  if (noBoosts) save.boosts = { giant: 0, twin: 0, teleport: 0, shield: 0, magnet: 0, meteor: 0 };
+  if (noBoosts) save.boosts = { giant: 0, twin: 0, teleport: 0, shield: 0, lightning: 0, blackhole: 0, rockets: 0, laser: 0, phantom: 0, magnet: 0, meteor: 0 };
   const run = new Run({ seed: seed++, stats: deriveStats(save), bestDepth: save.bestDepth, milestones: save.milestones, eventGoal });
   const bot = new Bot(0.75);
   const dt = 1 / 60;

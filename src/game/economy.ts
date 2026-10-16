@@ -241,6 +241,8 @@ export interface RunStats {
   dashDownBlocks: number;
   /** Power-ups brought into the run (dynamite is `dynamite`). */
   boosts: Partial<Record<Exclude<BoostId, 'dynamite'>, number>>;
+  /** Kinds of power-ups taken into the run (dynamite included). */
+  loadout?: BoostId[];
   /** World index (see WORLDS). */
   world: number;
   /** Highest tier workbenches may reach in this world. */
@@ -275,6 +277,7 @@ export function deriveStats(save: SaveData): RunStats {
         .filter((id) => id !== 'dynamite' && boostAvailable(save, id))
         .map((id) => [id, Math.min(save.boosts[id as Exclude<BoostId, 'dynamite'>] ?? 0, BOOSTS[id].perRun)]),
     ),
+    loadout: save.loadout.filter((id) => boostAvailable(save, id)),
     world: save.world,
     maxTier: Math.max(save.forgeTier, WORLDS[Math.max(save.world, save.worldsOpen - 1)].maxTier),
   };
