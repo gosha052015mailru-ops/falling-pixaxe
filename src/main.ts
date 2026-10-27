@@ -8,6 +8,7 @@ import { installErrorReporting } from './analytics';
 import { sfx } from './audio/sfx';
 import { wipeStorage } from './game/save';
 import { App } from './ui/app';
+import { gameReady, initPlatform } from './platform';
 
 // Open the game with ?reset in the address to start from scratch (handy while testing).
 const url = new URL(location.href);
@@ -18,8 +19,9 @@ if (url.searchParams.has('reset')) {
 }
 
 installErrorReporting();
-void (document.fonts?.ready ?? Promise.resolve()).finally(() => {
+void Promise.all([document.fonts?.ready, initPlatform()]).finally(() => {
   const app = new App();
+  gameReady();
   // Console helpers for testers: game.reset(), game.cheat({ coins, gems, level, depth, forge, down, boosts, world })
   const api = {
     reset: () => app.resetProgress(),

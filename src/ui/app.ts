@@ -21,7 +21,7 @@ import { applyResult, switchWorld, type ProgressReport } from '../game/progress'
 import { Run, type GameEvent, type RunResult } from '../game/run';
 import { clockNow, loadSave, wipeStorage, writeSave, type SaveData } from '../game/save';
 import { clearPush, listenPushOpens, schedulePush } from '../notifications';
-import { isNative, setVibration, showRewardedAd, vibrate } from '../platform';
+import { gameplay, isNative, onAdAudio, setVibration, showInterstitial, showRewardedAd, vibrate } from '../platform';
 import { Renderer } from '../render/renderer';
 import { makePickaxe } from '../render/textures';
 import { $, closeModal, modalOpen, toast } from './dom';
@@ -77,6 +77,7 @@ export class App {
   private musicBiome = -1;
   private lastMinorBanner = -1e9;
   private bombHintShown = false;
+  private wasPlaying = false;
   /** Missions already celebrated during this run (toast once). */
   private liveMissions = new Set<string>();
   private boostKey = '';
@@ -91,6 +92,7 @@ export class App {
     music.enabled = st.music;
     music.style = st.musicStyle;
     setVibration(st.vibration);
+    onAdAudio((paused) => void (paused ? sfx.context?.suspend() : sfx.context?.resume()));
     this.renderer = new Renderer($<HTMLCanvasElement>('canvas'));
     this.applyQuality();
     this.ui = new Screens(this);
@@ -444,6 +446,8 @@ export class App {
     if (wasTutorial) track('tutorial_complete', { depth: r.depth });
     for (const l of this.report.levelsReached) track('level_up', { level: l });
     this.ui.results(false);
+    // Interstitial between runs (Yandex only; the platform caps the frequency), not for brand-new players.
+    if (!wasTutorial && this.save.runs >= 3) void showInterstitial();
   }
 
   async doubleCoins(): Promise<boolean> {
@@ -465,6 +469,8 @@ export class App {
   private loop(ts: number): void {
     const frame = Math.min(0.1, (ts - this.last) / 1000 || 0);
     this.last = ts;
+    const playing = this.mode === 'play';
+    if (playing !== this.wasPlaying) gameplay((this.wasPlaying = playing));
     try {
       this.frame(frame);
     } catch (err) {

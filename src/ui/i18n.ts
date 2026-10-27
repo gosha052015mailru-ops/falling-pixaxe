@@ -1,3 +1,4 @@
+import { platformLang } from '../platform';
 type Dict = Record<string, string>;
 
 const ru: Dict = {
@@ -990,7 +991,7 @@ let current: Dict = ru;
 export let lang: 'ru' | 'en' = 'ru';
 
 export function setLang(pref: 'ru' | 'en' | 'auto'): void {
-  lang = pref === 'auto' ? (navigator.language?.toLowerCase().startsWith('ru') ? 'ru' : 'en') : pref;
+  lang = pref === 'auto' ? (platformLang() ?? (navigator.language?.toLowerCase().startsWith('ru') ? 'ru' : 'en')) : pref;
   current = lang === 'ru' ? ru : en;
   document.documentElement.lang = lang;
 }

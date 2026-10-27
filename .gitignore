@@ -7,3 +7,5 @@ android/.gradle/
 android/local.properties
 *.keystore
 *.jks
+dist-yandex
+falling-pickaxe-yandex.zip

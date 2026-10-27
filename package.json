@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host",
     "build": "tsc --noEmit && vite build",
+    "build:yandex": "tsc --noEmit && vite build --mode yandex --outDir dist-yandex && cd dist-yandex && rm -f ../falling-pickaxe-yandex.zip && zip -qr ../falling-pickaxe-yandex.zip .",
     "preview": "vite preview --host",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
